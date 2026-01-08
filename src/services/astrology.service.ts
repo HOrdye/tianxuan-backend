@@ -1,0 +1,865 @@
+import { pool } from '../config/database';
+import * as coinsService from './coins.service';
+
+/**
+ * 紫微斗数服务模块
+ * 提供命盘存档、时空资产解锁、缓存查询等功能
+ */
+
+/**
+ * 命盘结构接口
+ */
+export interface StarChart {
+  profile_id: string;
+  chart_structure: any; // JSONB 类型，存储命盘结构数据
+  brief_analysis_cache?: any; // JSONB 类型，存储简要分析缓存
+  created_at: Date;
+  updated_at: Date;
+}
+
+/**
+ * 保存/更新命盘结果接口
+ */
+export interface SaveStarChartResult {
+  success: boolean;
+  message?: string;
+  error?: string;
+  profile_id?: string;
+}
+
+/**
+ * 时空资产接口
+ */
+export interface UnlockedTimeAsset {
+  id: string;
+  user_id: string;
+  profile_id: string;
+  dimension: string;
+  period_start: string; // date 类型
+  period_end: string; // date 类型
+  period_type: string;
+  unlocked_at: Date;
+  expires_at: Date;
+  cost_coins: number;
+  is_active: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/**
+ * 解锁时空资产结果接口
+ */
+export interface UnlockTimeAssetResult {
+  success: boolean;
+  message?: string;
+  error?: string;
+  asset_id?: string;
+  remaining_balance?: number;
+}
+
+/**
+ * 缓存数据接口
+ */
+export interface TimespaceCache {
+  id: string;
+  user_id: string;
+  profile_id: string;
+  dimension: string;
+  cache_key: string;
+  cache_data: any; // JSONB 类型
+  period_start: string; // date 类型
+  period_end: string; // date 类型
+  expires_at: Date;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/**
+ * 保存/更新缓存结果接口
+ */
+export interface SaveCacheResult {
+  success: boolean;
+  message?: string;
+  error?: string;
+  cache_id?: string;
+}
+
+/**
+ * 保存或更新命盘结构
+ * 
+ * @param userId 用户ID（同时也是profile ID）
+ * @param chartStructure 命盘结构数据（JSONB）
+ * @param briefAnalysisCache 简要分析缓存（可选，JSONB）
+ * @returns Promise<SaveStarChartResult> 保存结果
+ * 
+ * @throws Error 如果保存失败
+ */
+export async function saveStarChart(
+  userId: string,
+  chartStructure: any,
+  briefAnalysisCache?: any
+): Promise<SaveStarChartResult> {
+  // 参数验证
+  if (!userId) {
+    throw new Error('参数错误：用户ID必须有效');
+  }
+
+  if (!chartStructure) {
+    throw new Error('参数错误：命盘结构数据必须有效');
+  }
+
+  const client = await pool.connect();
+  
+  // 在 try 块外声明 profileId，以便在 catch 块中使用
+  let profileId = userId;
+
+  try {
+    await client.query('BEGIN');
+
+    // 1. 获取或自动创建 profile_id
+    // 🔍 修复：不再只是单纯报错，而是尝试自动修复缺失的 Profile
+    // ⚠️ 关键：必须在事务中使用同一个 client 查询，确保事务一致性
+    const profileCheck = await client.query(
+      'SELECT id FROM public.profiles WHERE id = $1',
+      [userId]
+    );
+
+    console.log('Profile 检查结果:', {
+      userId,
+      profileExists: profileCheck.rows.length > 0,
+      profileId: profileCheck.rows.length > 0 ? profileCheck.rows[0].id : null,
+    });
+
+    if (profileCheck.rows.length === 0) {
+      console.log(`⚠️ 用户 ${userId} 缺少 Profile，正在自动修复...`);
+      
+      // 尝试获取用户邮箱
+      let email = `user_${userId.substring(0, 8)}@example.com`;
+      let username = `user_${userId.substring(0, 8)}`;
+      
+      try {
+        const userRes = await client.query('SELECT email FROM auth.users WHERE id = $1', [userId]);
+        if (userRes.rows.length > 0 && userRes.rows[0].email) {
+          email = userRes.rows[0].email;
+          username = email.split('@')[0];
+        }
+      } catch (userError: any) {
+        console.warn(`无法从 auth.users 获取邮箱，使用默认值: ${userError.message}`);
+      }
+
+      // 自动插入 Profile 记录
+      try {
+        await client.query(
+          `INSERT INTO public.profiles (id, email, username, role, tier, tianji_coins_balance, created_at, updated_at)
+           VALUES ($1, $2, $3, 'user', 'explorer', 0, NOW(), NOW())`,
+          [userId, email, username]
+        );
+        console.log(`✅ 用户 ${userId} Profile 自动修复完成`);
+        
+        // 验证 Profile 是否真的创建成功
+        const verifyCheck = await client.query(
+          'SELECT id FROM public.profiles WHERE id = $1',
+          [userId]
+        );
+        if (verifyCheck.rows.length === 0) {
+          throw new Error('Profile 创建后验证失败');
+        }
+      } catch (profileError: any) {
+        console.error(`❌ Profile 创建失败:`, {
+          userId,
+          email,
+          username,
+          error: profileError.message,
+          code: profileError.code,
+        });
+        // 如果是唯一约束错误，说明 Profile 已经存在（可能是并发创建）
+        if (profileError.code === '23505') {
+          console.log(`⚠️ Profile 已存在（可能是并发创建），继续执行...`);
+        } else {
+          // 其他错误，抛出异常
+          throw new Error(`无法创建 Profile: ${profileError.message}`);
+        }
+      }
+    }
+
+    // 2. 检查是否已存在命盘记录 (Upsert 逻辑)
+    const existing = await client.query(
+      'SELECT profile_id FROM public.star_charts WHERE profile_id = $1',
+      [profileId]
+    );
+
+    if (existing.rows.length > 0) {
+      // 更新
+      await client.query(
+        `UPDATE public.star_charts 
+         SET chart_structure = $1, 
+             brief_analysis_cache = COALESCE($2, brief_analysis_cache),
+             updated_at = NOW()
+         WHERE profile_id = $3`,
+        [JSON.stringify(chartStructure), briefAnalysisCache ? JSON.stringify(briefAnalysisCache) : null, profileId]
+      );
+    } else {
+      // 插入前再次验证 profileId 是否存在（在事务中）
+      const finalProfileCheck = await client.query(
+        'SELECT id FROM public.profiles WHERE id = $1',
+        [profileId]
+      );
+      
+      if (finalProfileCheck.rows.length === 0) {
+        throw new Error(`Profile 不存在：profileId=${profileId}, userId=${userId}`);
+      }
+      
+      console.log('准备插入 star_charts:', {
+        profileId,
+        profileExists: finalProfileCheck.rows.length > 0,
+      });
+      
+      // 插入
+      await client.query(
+        `INSERT INTO public.star_charts (profile_id, chart_structure, brief_analysis_cache, created_at, updated_at)
+         VALUES ($1, $2, $3, NOW(), NOW())`,
+        [profileId, JSON.stringify(chartStructure), briefAnalysisCache ? JSON.stringify(briefAnalysisCache) : null]
+      );
+    }
+
+    await client.query('COMMIT');
+    return {
+      success: true,
+      message: '命盘保存成功',
+      profile_id: profileId,
+    };
+  } catch (error: any) {
+    await client.query('ROLLBACK');
+    console.error('保存命盘失败:', {
+      userId,
+      profileId,
+      error: error.message,
+      errorCode: error.code,
+      errorDetail: error.detail,
+      errorConstraint: error.constraint,
+    });
+
+    // 处理数据库错误
+    if (error.code === '23503') {
+      // 外键约束违反 - 检查是否是 profile_id 外键问题
+      console.error('外键约束违反，检查 profiles 记录:', {
+        userId,
+        profileId,
+        constraint: error.constraint,
+      });
+      
+      // 再次验证 profiles 记录是否存在
+      const finalCheck = await pool.query(
+        'SELECT id FROM public.profiles WHERE id = $1',
+        [profileId]
+      );
+      
+      if (finalCheck.rows.length === 0) {
+        throw new Error('用户不存在：profiles 记录不存在');
+      } else {
+        throw new Error(`外键约束违反：${error.constraint || '未知约束'} - ${error.detail || error.message}`);
+      }
+    }
+
+    throw new Error(`保存命盘失败: ${error.message || '未知错误'}`);
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * 查询命盘结构
+ * 
+ * @param profileId 用户profile ID
+ * @returns Promise<StarChart | null> 命盘数据或 null（不存在）
+ */
+export async function getStarChart(profileId: string): Promise<StarChart | null> {
+  try {
+    const result = await pool.query(
+      `SELECT 
+        profile_id,
+        chart_structure,
+        brief_analysis_cache,
+        created_at,
+        updated_at
+      FROM public.star_charts
+      WHERE profile_id = $1`,
+      [profileId]
+    );
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    const row = result.rows[0];
+    return {
+      profile_id: row.profile_id,
+      chart_structure: typeof row.chart_structure === 'string' 
+        ? JSON.parse(row.chart_structure) 
+        : row.chart_structure,
+      brief_analysis_cache: row.brief_analysis_cache
+        ? (typeof row.brief_analysis_cache === 'string'
+            ? JSON.parse(row.brief_analysis_cache)
+            : row.brief_analysis_cache)
+        : undefined,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    };
+  } catch (error: any) {
+    console.error('查询命盘失败:', {
+      profileId,
+      error: error.message,
+    });
+    throw new Error(`查询命盘失败: ${error.message || '未知错误'}`);
+  }
+}
+
+/**
+ * 更新简要分析缓存
+ * 
+ * @param profileId 用户profile ID
+ * @param briefAnalysisCache 简要分析缓存数据（JSONB）
+ * @returns Promise<SaveStarChartResult> 更新结果
+ * 
+ * @throws Error 如果更新失败
+ */
+export async function updateBriefAnalysisCache(
+  profileId: string,
+  briefAnalysisCache: any
+): Promise<SaveStarChartResult> {
+  // 参数验证
+  if (!profileId) {
+    throw new Error('参数错误：profile ID必须有效');
+  }
+
+  if (!briefAnalysisCache) {
+    throw new Error('参数错误：简要分析缓存数据必须有效');
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE public.star_charts
+       SET brief_analysis_cache = $1, updated_at = NOW()
+       WHERE profile_id = $2
+       RETURNING profile_id`,
+      [JSON.stringify(briefAnalysisCache), profileId]
+    );
+
+    if (result.rows.length === 0) {
+      throw new Error('命盘不存在，请先保存命盘');
+    }
+
+    return {
+      success: true,
+      message: '简要分析缓存更新成功',
+      profile_id: result.rows[0].profile_id,
+    };
+  } catch (error: any) {
+    console.error('更新简要分析缓存失败:', {
+      profileId,
+      error: error.message,
+    });
+
+    if (error.message?.includes('命盘不存在')) {
+      throw error;
+    }
+
+    throw new Error(`更新简要分析缓存失败: ${error.message || '未知错误'}`);
+  }
+}
+
+/**
+ * 解锁时空资产（需要扣费）
+ * 
+ * @param userId 用户ID
+ * @param profileId 用户profile ID
+ * @param dimension 维度（如 'year', 'month', 'day' 等）
+ * @param periodStart 时间段开始日期（YYYY-MM-DD）
+ * @param periodEnd 时间段结束日期（YYYY-MM-DD）
+ * @param periodType 时间段类型（如 'year', 'month', 'day' 等）
+ * @param expiresAt 过期时间
+ * @param costCoins 消耗的天机币数量（可选，默认10）
+ * @returns Promise<UnlockTimeAssetResult> 解锁结果
+ * 
+ * @throws Error 如果解锁失败（余额不足、已解锁等）
+ */
+export async function unlockTimeAsset(
+  userId: string,
+  profileId: string,
+  dimension: 'daily' | 'monthly' | 'yearly', // 只允许这三个值
+  periodStart: string,
+  periodEnd: string,
+  periodType: 'day' | 'month' | 'year', // 只允许这三个值
+  expiresAt: Date,
+  costCoins: number = 10
+): Promise<UnlockTimeAssetResult> {
+  // 参数验证
+  if (!userId || !profileId) {
+    throw new Error('参数错误：用户ID和profile ID必须有效');
+  }
+
+  if (!dimension || !periodStart || !periodEnd || !periodType) {
+    throw new Error('参数错误：维度、时间段和类型必须有效');
+  }
+
+  if (costCoins <= 0) {
+    throw new Error('参数错误：消耗的天机币数量必须大于0');
+  }
+
+  // 验证日期格式
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(periodStart) || !dateRegex.test(periodEnd)) {
+    throw new Error('参数错误：日期格式必须为 YYYY-MM-DD');
+  }
+
+  // 检查用户是否存在
+  const userCheck = await pool.query(
+    'SELECT id FROM public.profiles WHERE id = $1 AND id = $2',
+    [profileId, userId]
+  );
+
+  if (userCheck.rows.length === 0) {
+    throw new Error('用户不存在或profile ID不匹配');
+  }
+
+  // 检查是否已经解锁（相同维度、时间段）
+  const existingCheck = await pool.query(
+    `SELECT id FROM public.unlocked_time_assets
+     WHERE user_id = $1 
+       AND profile_id = $2
+       AND dimension = $3
+       AND period_start = $4
+       AND period_end = $5
+       AND is_active = true`,
+    [userId, profileId, dimension, periodStart, periodEnd]
+  );
+
+  if (existingCheck.rows.length > 0) {
+    throw new Error('该时间段已解锁');
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    // 1. 扣费（调用天机币服务）
+    const deductResult = await coinsService.deductCoins(
+      userId,
+      'time_asset_unlock',
+      costCoins
+    );
+
+    if (!deductResult.success) {
+      await client.query('ROLLBACK');
+      throw new Error(deductResult.message || '扣费失败');
+    }
+
+    // 2. 创建解锁记录
+    const insertResult = await client.query(
+      `INSERT INTO public.unlocked_time_assets 
+       (user_id, profile_id, dimension, period_start, period_end, period_type, expires_at, cost_coins, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)
+       RETURNING id`,
+      [userId, profileId, dimension, periodStart, periodEnd, periodType, expiresAt, costCoins]
+    );
+
+    await client.query('COMMIT');
+
+    return {
+      success: true,
+      message: '时空资产解锁成功',
+      asset_id: insertResult.rows[0].id,
+      remaining_balance: deductResult.remaining_balance,
+    };
+  } catch (error: any) {
+    await client.query('ROLLBACK');
+
+    console.error('解锁时空资产失败:', {
+      userId,
+      profileId,
+      dimension,
+      periodStart,
+      periodEnd,
+      error: error.message,
+    });
+
+    // 如果是已知错误，直接抛出
+    if (error.message?.includes('已解锁') ||
+        error.message?.includes('余额不足') ||
+        error.message?.includes('扣费失败') ||
+        error.message?.includes('参数错误')) {
+      throw error;
+    }
+
+    // 处理数据库唯一约束错误
+    if (error.code === '23505' || error.message?.includes('duplicate key') || error.message?.includes('unique constraint')) {
+      throw new Error('该时间段已解锁');
+    }
+
+    throw new Error(`解锁时空资产失败: ${error.message || '未知错误'}`);
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * 查询已解锁的时空资产
+ * 
+ * @param userId 用户ID
+ * @param profileId 用户profile ID（可选，如果提供则只查询该profile的资产）
+ * @param dimension 维度（可选，如果提供则只查询该维度的资产）
+ * @param limit 返回记录数限制（可选，默认50）
+ * @param offset 偏移量（可选，默认0）
+ * @returns Promise<UnlockedTimeAsset[]> 已解锁的时空资产列表
+ */
+export async function getUnlockedTimeAssets(
+  userId: string,
+  profileId?: string,
+  dimension?: string,
+  limit: number = 50,
+  offset: number = 0
+): Promise<UnlockedTimeAsset[]> {
+  // 参数验证
+  if (!userId) {
+    throw new Error('参数错误：用户ID必须有效');
+  }
+
+  if (limit < 1 || limit > 100) {
+    throw new Error('参数错误：limit 必须在 1-100 之间');
+  }
+
+  if (offset < 0) {
+    throw new Error('参数错误：offset 不能为负数');
+  }
+
+  try {
+    let query = `
+      SELECT 
+        id,
+        user_id,
+        profile_id,
+        dimension,
+        period_start,
+        period_end,
+        period_type,
+        unlocked_at,
+        expires_at,
+        cost_coins,
+        is_active,
+        created_at,
+        updated_at
+      FROM public.unlocked_time_assets
+      WHERE user_id = $1
+    `;
+
+    const params: any[] = [userId];
+    let paramIndex = 2;
+
+    if (profileId) {
+      query += ` AND profile_id = $${paramIndex}`;
+      params.push(profileId);
+      paramIndex++;
+    }
+
+    if (dimension) {
+      query += ` AND dimension = $${paramIndex}`;
+      params.push(dimension);
+      paramIndex++;
+    }
+
+    // 只查询激活的资产
+    query += ` AND is_active = true`;
+
+    // 按解锁时间倒序排列
+    query += ` ORDER BY unlocked_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    params.push(limit, offset);
+
+    const result = await pool.query(query, params);
+
+    return result.rows.map((row) => ({
+      id: row.id,
+      user_id: row.user_id,
+      profile_id: row.profile_id,
+      dimension: row.dimension,
+      period_start: row.period_start,
+      period_end: row.period_end,
+      period_type: row.period_type,
+      unlocked_at: row.unlocked_at,
+      expires_at: row.expires_at,
+      cost_coins: row.cost_coins,
+      is_active: row.is_active,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    }));
+  } catch (error: any) {
+    console.error('查询已解锁时空资产失败:', {
+      userId,
+      profileId,
+      dimension,
+      error: error.message,
+    });
+    throw new Error(`查询已解锁时空资产失败: ${error.message || '未知错误'}`);
+  }
+}
+
+/**
+ * 检查某个时间段是否已解锁
+ * 
+ * @param userId 用户ID
+ * @param profileId 用户profile ID
+ * @param dimension 维度
+ * @param periodStart 时间段开始日期（YYYY-MM-DD）
+ * @param periodEnd 时间段结束日期（YYYY-MM-DD）
+ * @returns Promise<boolean> 是否已解锁
+ */
+export async function isTimeAssetUnlocked(
+  userId: string,
+  profileId: string,
+  dimension: string,
+  periodStart: string,
+  periodEnd: string
+): Promise<boolean> {
+  // 参数验证
+  if (!userId || !profileId || !dimension || !periodStart || !periodEnd) {
+    return false;
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT id FROM public.unlocked_time_assets
+       WHERE user_id = $1 
+         AND profile_id = $2
+         AND dimension = $3
+         AND period_start = $4
+         AND period_end = $5
+         AND is_active = true
+         AND expires_at > NOW()`,
+      [userId, profileId, dimension, periodStart, periodEnd]
+    );
+
+    return result.rows.length > 0;
+  } catch (error: any) {
+    console.error('检查时空资产解锁状态失败:', {
+      userId,
+      profileId,
+      dimension,
+      periodStart,
+      periodEnd,
+      error: error.message,
+    });
+    return false;
+  }
+}
+
+/**
+ * 保存或更新缓存数据
+ * 
+ * @param userId 用户ID
+ * @param profileId 用户profile ID
+ * @param dimension 维度
+ * @param cacheKey 缓存键
+ * @param cacheData 缓存数据（JSONB）
+ * @param periodStart 时间段开始日期（YYYY-MM-DD）
+ * @param periodEnd 时间段结束日期（YYYY-MM-DD）
+ * @param expiresAt 过期时间
+ * @returns Promise<SaveCacheResult> 保存结果
+ * 
+ * @throws Error 如果保存失败
+ */
+export async function saveTimespaceCache(
+  userId: string,
+  profileId: string,
+  dimension: string,
+  cacheKey: string,
+  cacheData: any,
+  periodStart: string,
+  periodEnd: string,
+  expiresAt: Date
+): Promise<SaveCacheResult> {
+  // 参数验证
+  if (!userId || !profileId) {
+    throw new Error('参数错误：用户ID和profile ID必须有效');
+  }
+
+  if (!dimension || !cacheKey || !cacheData) {
+    throw new Error('参数错误：维度、缓存键和缓存数据必须有效');
+  }
+
+  // 验证日期格式
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(periodStart) || !dateRegex.test(periodEnd)) {
+    throw new Error('参数错误：日期格式必须为 YYYY-MM-DD');
+  }
+
+  try {
+    // 使用 UPSERT 操作（唯一约束是 user_id, profile_id, dimension, period_start）
+    const result = await pool.query(
+      `INSERT INTO public.timespace_cache 
+       (user_id, profile_id, dimension, cache_key, cache_data, period_start, period_end, expires_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+       ON CONFLICT (user_id, profile_id, dimension, period_start) 
+       DO UPDATE SET 
+         cache_key = EXCLUDED.cache_key,
+         cache_data = EXCLUDED.cache_data,
+         period_end = EXCLUDED.period_end,
+         expires_at = EXCLUDED.expires_at,
+         updated_at = NOW()
+       RETURNING id`,
+      [
+        userId,
+        profileId,
+        dimension,
+        cacheKey,
+        JSON.stringify(cacheData),
+        periodStart,
+        periodEnd,
+        expiresAt,
+      ]
+    );
+
+    return {
+      success: true,
+      message: '缓存保存成功',
+      cache_id: result.rows[0].id,
+    };
+  } catch (error: any) {
+    console.error('保存缓存失败:', {
+      userId,
+      profileId,
+      dimension,
+      cacheKey,
+      error: error.message,
+    });
+
+    // 处理数据库错误
+    if (error.code === '23503') {
+      throw new Error('用户不存在');
+    }
+
+    throw new Error(`保存缓存失败: ${error.message || '未知错误'}`);
+  }
+}
+
+/**
+ * 查询缓存数据
+ * 
+ * @param userId 用户ID
+ * @param profileId 用户profile ID（保留参数以兼容接口，但实际查询中不使用）
+ * @param dimension 维度
+ * @param cacheKey 缓存键
+ * @param periodStart 时间段开始日期（YYYY-MM-DD，可选）
+ * @param periodEnd 时间段结束日期（YYYY-MM-DD，可选）
+ * @returns Promise<TimespaceCache | null> 缓存数据或 null（不存在或已过期）
+ */
+export async function getTimespaceCache(
+  userId: string,
+  profileId: string,
+  dimension: string,
+  cacheKey: string,
+  periodStart?: string,
+  periodEnd?: string
+): Promise<TimespaceCache | null> {
+  // 参数验证
+  if (!userId || !dimension || !cacheKey) {
+    throw new Error('参数错误：用户ID、维度和缓存键必须有效');
+  }
+
+  try {
+    // 🔍 修复：移除 AND profile_id = $2 条件
+    // 原因：user_id 已经确定了归属，profile_id 通常等于 user_id，双重检查容易因为微小差异导致查不到
+    let query = `
+      SELECT 
+        id, user_id, profile_id, dimension, cache_key, cache_data, 
+        period_start, period_end, expires_at, created_at, updated_at
+      FROM public.timespace_cache
+      WHERE user_id = $1
+        AND dimension = $2
+        AND cache_key = $3
+    `;
+
+    // 参数只需 user_id, dimension, cache_key
+    // 注意：这里去掉了 profileId 参数的使用，因为它是多余的
+    const params: any[] = [userId, dimension, cacheKey];
+
+    if (periodStart) {
+      // 🔍 修复：强制转换日期类型，防止字符串比对失败
+      query += ` AND period_start = $${params.length + 1}::date`; 
+      params.push(periodStart);
+    }
+
+    if (periodEnd) {
+      query += ` AND period_end = $${params.length + 1}::date`;
+      params.push(periodEnd);
+    }
+
+    // 确保不过期
+    query += ` AND expires_at > NOW()`;
+    query += ` ORDER BY created_at DESC LIMIT 1`;
+
+    // 🔍 调试日志：记录查询参数
+    console.log('查询缓存参数:', {
+      userId,
+      dimension,
+      cacheKey,
+      periodStart,
+      periodEnd,
+      queryParams: params,
+    });
+
+    const result = await pool.query(query, params);
+
+    // 🔍 调试日志：记录查询结果
+    console.log('查询缓存结果:', {
+      rowCount: result.rows.length,
+      firstRow: result.rows.length > 0 ? {
+        id: result.rows[0].id,
+        expires_at: result.rows[0].expires_at,
+        now: new Date(),
+        isExpired: result.rows[0].expires_at ? new Date(result.rows[0].expires_at) <= new Date() : false,
+      } : null,
+    });
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    const row = result.rows[0];
+    return {
+      id: row.id,
+      user_id: row.user_id,
+      profile_id: row.profile_id,
+      dimension: row.dimension,
+      cache_key: row.cache_key,
+      // 处理 JSON 字段可能的字符串情况
+      cache_data: typeof row.cache_data === 'string' ? JSON.parse(row.cache_data) : row.cache_data,
+      period_start: row.period_start,
+      period_end: row.period_end,
+      expires_at: row.expires_at,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    };
+  } catch (error: any) {
+    console.error('查询缓存失败:', { userId, dimension, cacheKey, error: error.message });
+    throw new Error(`查询缓存失败: ${error.message || '未知错误'}`);
+  }
+}
+
+/**
+ * 删除过期缓存（清理任务）
+ * 
+ * @returns Promise<number> 删除的记录数
+ */
+export async function cleanExpiredCache(): Promise<number> {
+  try {
+    const result = await pool.query(
+      `DELETE FROM public.timespace_cache
+       WHERE expires_at < NOW()`
+    );
+
+    return result.rowCount || 0;
+  } catch (error: any) {
+    console.error('清理过期缓存失败:', error.message);
+    throw new Error(`清理过期缓存失败: ${error.message || '未知错误'}`);
+  }
+}
