@@ -83,6 +83,24 @@
       - ✅ 检查时间段是否已解锁
       - ✅ 保存/更新缓存数据
       - ✅ 查询缓存数据
+  - ✅ 订阅/会员系统 API 开发（已完成）
+    - ✅ 订阅服务模块（`src/services/subscription.service.ts`）
+    - ✅ 订阅路由和控制器（`src/routes/subscription.routes.ts`, `src/controllers/subscription.controller.ts`）
+    - ✅ 路由注册（已在 `src/app.ts` 中注册）
+    - ✅ 测试验证（12/12 测试用例通过，100%）
+    - ✅ 测试结果报告（`SUBSCRIPTION_ISSUE_REPORT.md`）
+    - ✅ 功能实现：
+      - ✅ 获取订阅状态（tier、status、features）
+      - ✅ 检查功能权限（支持嵌套路径，如 'yijing.available'）
+      - ✅ 获取今日使用次数
+      - ✅ 记录功能使用
+      - ✅ 创建订阅订单（支持 basic、premium、vip 等级）
+      - ✅ 检查过期订阅
+      - ✅ 取消订阅
+      - ✅ 检查订阅状态（支付回调后）
+    - ✅ **修复问题**: 数据库 CHECK 约束问题（usage_logs.feature、subscriptions.status），已修复
+    - ✅ **修复问题**: 数据库字段问题（cancelled_at 字段），已修复
+    - ✅ **修复问题**: Token 解析一致性验证，已添加调试日志
 
 ### ⏳ 待开始阶段
 
@@ -994,6 +1012,18 @@ sudo certbot renew --dry-run
   - ✅ 查询订单详情 API（`GET /api/payment/orders/:orderId`）
   - ✅ 支付成功核心逻辑（事务保护、幂等性检查）
   - ✅ 修复数据库约束问题（item_type 字段使用 'coin_pack'）
+- ✅ 迁移订阅/会员系统 API（subscriptions、usage_logs等）- 已完成
+  - ✅ 获取订阅状态 API（`GET /api/subscription/status`）
+  - ✅ 检查功能权限 API（`GET /api/subscription/permission/:feature`）
+  - ✅ 获取今日使用次数 API（`GET /api/subscription/usage/:feature`）
+  - ✅ 记录功能使用 API（`POST /api/subscription/record-usage`）
+  - ✅ 创建订阅订单 API（`POST /api/subscription/create`）
+  - ✅ 检查过期订阅 API（`POST /api/subscription/check-expired`）
+  - ✅ 取消订阅 API（`POST /api/subscription/cancel`）
+  - ✅ 检查订阅状态 API（`GET /api/subscription/check-status`）
+  - ✅ 修复数据库 CHECK 约束问题（usage_logs.feature、subscriptions.status）
+  - ✅ 修复数据库字段问题（cancelled_at 字段）
+  - ✅ 添加 Token 解析一致性调试日志
 - ✅ 迁移紫微斗数相关 API（star_charts、unlocked_time_assets等）- 已完成
   - ✅ 命盘存档 API（`POST /api/astrology/star-chart`, `GET /api/astrology/star-chart`）
   - ✅ 更新简要分析缓存 API（`PUT /api/astrology/star-chart/brief-analysis`）
@@ -1003,7 +1033,7 @@ sudo certbot renew --dry-run
   - ✅ 保存/更新缓存 API（`POST /api/astrology/cache`）
   - ✅ 查询缓存 API（`GET /api/astrology/cache`）
 
-**阶段4：前端适配** ⏳（待开始）
+**阶段4：前端适配** 🚧（进行中）
 - ⏳ 修改前端 API 调用地址
 - ⏳ 适配认证流程
 - ⏳ 测试所有功能
@@ -1165,8 +1195,27 @@ sudo certbot renew --dry-run
      - ✅ 测试验证（7/7 测试用例通过，100%）
      - ✅ 测试结果报告（`TEST_CHECKIN_RESULT.md`）
      - ✅ **测试结果**: 7/7 测试用例通过（100%），所有核心功能正常
-   - [ ] 订阅管理
-   - [ ] 管理员后台 API
+   - ✅ 订阅/会员系统 API 开发（已完成）
+     - ✅ 订阅服务模块（`src/services/subscription.service.ts`）
+     - ✅ 订阅路由和控制器（`src/routes/subscription.routes.ts`, `src/controllers/subscription.controller.ts`）
+     - ✅ 路由注册（已在 `src/app.ts` 中注册）
+     - ✅ 测试验证（12/12 测试用例通过，100%）
+     - ✅ 测试结果报告（`SUBSCRIPTION_ISSUE_REPORT.md`）
+     - ✅ **测试结果**: 12/12 测试用例通过（100%），所有核心功能正常
+     - ✅ **修复问题**: 数据库 CHECK 约束问题（usage_logs.feature、subscriptions.status），已修复
+     - ✅ **修复问题**: 数据库字段问题（cancelled_at 字段），已修复
+     - ✅ **修复问题**: Token 解析一致性验证，已添加调试日志
+  - ✅ 管理员后台 API 开发（已完成）
+    - ✅ 管理员服务模块（`src/services/admin.service.ts`）
+    - ✅ 管理员路由和控制器（`src/routes/admin.routes.ts`, `src/controllers/admin.controller.ts`）
+    - ✅ 路由注册（已在 `src/app.ts` 中注册）
+    - ✅ 测试验证（17/17 测试用例通过，100%）
+    - ✅ 测试结果报告（`TEST_ADMIN_RESULT.md`）
+    - ✅ 功能实现：
+      - ✅ 用户管理（列表、详情、修改等级、调整天机币）
+      - ✅ 交易流水查询（天机币流水、支付流水）
+      - ✅ 数据统计（概览、用户统计、收入统计）
+    - ✅ **安全修复**: SQL注入风险、参数错位Bug、列名注入风险（已修复）
 
 ---
 
@@ -1820,6 +1869,7 @@ pm2 monit
 
 ### 相关文档
 
+- [前端转后端API需求映射表](./260130-前端转后端API需求映射表.md) ✅ **已创建** - 根据前端"楼盘模型"梳理的后端API需求
 - [Supabase 迁移指南](./SUPABASE_MIGRATION_GUIDE.md)（待创建）
 - [API 接口文档](./API_DOCUMENTATION.md)（待创建）
 - [数据库设计文档](./DATABASE_DESIGN.md)（待创建）
@@ -1852,6 +1902,17 @@ pm2 monit
   - 📊 **总体进度**：已完成 5 个核心 API 模块，共 37 个测试用例，100% 通过率
 
 - **2025-01-30（晚上）**: 
+  - ✅ 订阅/会员系统 API 开发完成，12/12 测试用例通过（100%）
+  - ✅ 实现订阅状态查询、功能权限检查、使用次数统计功能
+  - ✅ 实现订阅订单创建、过期检查、取消订阅功能
+  - ✅ 修复数据库 CHECK 约束问题（usage_logs.feature、subscriptions.status）
+  - ✅ 修复数据库字段问题（cancelled_at 字段）
+  - ✅ 添加 Token 解析一致性调试日志（中间件和测试脚本）
+  - ✅ 创建测试结果报告（`SUBSCRIPTION_ISSUE_REPORT.md`）
+  - ✅ 更新部署进度：订阅/会员系统 API 已完成
+  - 📊 **总体进度**：已完成 7 个核心 API 模块，共 61 个测试用例，100% 通过率
+
+- **2025-01-30（晚上）**: 
   - ✅ 紫微斗数 API 开发完成
   - ✅ 实现命盘存档功能（保存/更新命盘结构、查询命盘结构、更新简要分析缓存）
   - ✅ 实现时空资产解锁功能（解锁资产、查询已解锁资产、检查是否已解锁）
@@ -1863,6 +1924,14 @@ pm2 monit
   - ✅ 更新部署进度：紫微斗数 API 已完成
   - 📊 **总体进度**：已完成 6 个核心 API 模块
   - ⏳ **下一步**：测试紫微斗数 API，继续开发其他业务 API
+
+- **2025-01-30（晚上）**: 
+  - ✅ 创建《前端转后端API需求映射表》文档
+  - ✅ 按照《前端转后端需求映射模板》梳理所有API需求
+  - ✅ 完成9个模块的API映射（认证、用户资料、订阅、支付、天机币、签到、紫微斗数、管理员后台、其他业务）
+  - ✅ 统计API完成度：27/49已完成（55%），22个待开发
+  - ✅ 明确下一步优先级：P1订阅/会员系统（8个API，重构重点）
+  - 📊 **总体进度**：API需求梳理完成，准备开始订阅系统开发
 
 - **2025-01-30（晚上）**: 
   - ✅ 更新部署进度：第三阶段项目初始化和基础配置已完成
@@ -1883,35 +1952,48 @@ pm2 monit
 
 ---
 
-**最后更新**: 2025年1月30日（晚上）  
+**最后更新**: 2026年1月8日  
 **当前进度**: 
 - ✅ **认证系统**：开发完成，所有测试通过（9/9，100%）
 - ✅ **用户资料 API**：开发完成，所有测试通过（6/6，100%）
 - ✅ **天机币系统 API**：开发完成，所有测试通过（7/7，100%）
 - ✅ **签到系统 API**：开发完成，所有测试通过（7/7，100%）
 - ✅ **支付系统 API**：开发完成，所有测试通过（8/8，100%）
+- ✅ **订阅/会员系统 API**：开发完成，所有测试通过（12/12，100%）
 - ✅ 服务器运行在端口 3000，数据库连接正常
 - ✅ 用户注册、登录、JWT Token 验证功能正常
 - ✅ 用户资料查询、更新功能正常
 - ✅ 天机币扣费、查询余额、查询流水功能正常
 - ✅ 每日签到、查询状态、查询记录功能正常
 - ✅ 支付订单创建、Mock 支付成功、订单查询功能正常
+- ✅ 订阅状态查询、功能权限检查、使用次数统计功能正常
+- ✅ 订阅订单创建、过期检查、取消订阅功能正常
 - ✅ 参数验证、错误处理、认证保护功能正常
 - ✅ 命盘存档、查询命盘结构、更新简要分析缓存功能正常
 - ✅ 解锁时空资产、查询已解锁资产、检查是否已解锁功能正常
 - ✅ 保存/更新缓存、查询缓存功能正常
 - ✅ **修复问题**: 外键约束错误（`star_charts` 表外键指向错误），已修复
 - ✅ **修复问题**: 缓存过期时间问题（测试脚本），已修复
-- 📊 **总体进度**：已完成 6 个核心 API 模块，共 49 个测试用例，100% 通过率
-- ⏳ **下一步**：继续开发其他业务 API（订阅管理、管理员后台等）
+- ✅ **修复问题**: 数据库 CHECK 约束问题（usage_logs.feature、subscriptions.status），已修复
+- ✅ **修复问题**: 数据库字段问题（cancelled_at 字段），已修复
+- ✅ **修复问题**: Token 解析一致性验证，已添加调试日志
+- ✅ 管理员后台 API 开发（已完成，17/17测试用例通过，100%）
+- ✅ **安全修复**: SQL注入风险、参数错位Bug、列名注入风险（已修复）
+- 📊 **总体进度**：已完成 8 个核心 API 模块，共 78 个测试用例，100% 通过率
+- 🚧 **下一步**：前端适配（修改API调用地址、适配认证流程）
 
 ### 🎯 关键成就
 
 - ✅ **100% 测试通过率**：所有已开发的 API 模块测试通过率均为 100%
 - ✅ **完整的支付流程**：从创建订单到 Mock 支付成功的完整流程已实现
-- ✅ **数据库约束修复**：成功修复 item_type 字段约束问题，使用 'coin_pack' 作为合法值
+- ✅ **完整的订阅/会员系统**：从订阅状态查询到取消订阅的完整流程已实现
+- ✅ **数据库约束修复**：成功修复多个数据库约束问题（item_type、usage_logs.feature、subscriptions.status）
+- ✅ **数据库字段修复**：成功修复 cancelled_at 字段问题
+- ✅ **Token 一致性验证**：通过添加调试日志，确认了Token解析的一致性
 - ✅ **Mock 支付系统**：实现了开发环境专用的 Mock 支付功能，支持完整测试流程
 - ✅ **幂等性保护**：支付回调支持幂等性检查，防止重复处理
 - ✅ **事务保护**：支付成功逻辑使用数据库事务，确保数据一致性
+- ✅ **功能权限系统**：实现了灵活的功能权限检查，支持嵌套路径（如 'yijing.available'）
+- ✅ **使用次数统计**：实现了每日使用次数统计和限制功能
 
 **维护者**: 开发团队

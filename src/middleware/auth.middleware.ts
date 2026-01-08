@@ -61,6 +61,13 @@ export async function authenticateToken(
     // 验证 Token
     const decoded = await verifyJwtToken(token);
 
+    // 🔍 调试日志：打印解析后的 Token 信息
+    console.log('🔍 [Middleware Debug] Decoded Token:', {
+      userId: decoded.userId,
+      email: decoded.email,
+      hasUserId: !!decoded.userId,
+    });
+
     // 将用户信息附加到请求对象
     req.user = decoded;
 

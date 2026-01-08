@@ -11,6 +11,8 @@ import coinsRoutes from './routes/coins.routes';
 import checkinRoutes from './routes/checkin.routes';
 import paymentRoutes from './routes/payment.routes';
 import astrologyRoutes from './routes/astrology.routes';
+import subscriptionRoutes from './routes/subscription.routes';
+import adminRoutes from './routes/admin.routes';
 
 dotenv.config();
 
@@ -68,6 +70,12 @@ app.use('/api/payment', paymentRoutes);
 
 // 🔮 紫微斗数路由
 app.use('/api/astrology', astrologyRoutes);
+
+// 💎 订阅/会员系统路由
+app.use('/api/subscription', subscriptionRoutes);
+
+// 👨‍💼 管理员后台路由
+app.use('/api/admin', adminRoutes);
 
 // 404 处理
 app.use((req, res) => {

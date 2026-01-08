@@ -90,8 +90,9 @@ export async function updateProfile(
   const values: any[] = [];
   let paramIndex = 1;
 
-  // 处理可更新字段
-  const allowedFields = [
+  // ✅ 安全修复：定义严格的白名单，防止列名注入攻击
+  // 只允许用户修改这些字段，禁止修改敏感字段（如 role, tier, tianji_coins_balance 等）
+  const ALLOWED_FIELDS = [
     'username',
     'avatar_url',
     'bio',
@@ -101,20 +102,42 @@ export async function updateProfile(
     'phone',
     'website',
     'preferences',
-  ];
+  ] as const;
 
+  // ✅ 额外安全：验证字段名格式（只允许字母、数字、下划线）
+  const isValidFieldName = (fieldName: string): boolean => {
+    return /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(fieldName);
+  };
+
+  // 遍历传入的数据
   for (const [key, value] of Object.entries(data)) {
-    if (allowedFields.includes(key) && value !== undefined) {
-      if (key === 'preferences' && typeof value === 'object') {
-        // preferences 是 JSONB，需要转换为 JSON 字符串
-        updateFields.push(`${key} = $${paramIndex}`);
-        values.push(JSON.stringify(value));
-      } else {
-        updateFields.push(`${key} = $${paramIndex}`);
-        values.push(value);
-      }
-      paramIndex++;
+    // 跳过 undefined 值
+    if (value === undefined) {
+      continue;
     }
+
+    // 🛡️ 安全检查1：验证字段名格式（防止特殊字符注入）
+    if (!isValidFieldName(key)) {
+      console.warn(`[安全警告] 尝试使用非法字段名格式: ${key}，已拒绝`);
+      continue;
+    }
+
+    // 🛡️ 安全检查2：只允许修改白名单里的字段
+    if (!ALLOWED_FIELDS.includes(key as any)) {
+      console.warn(`[安全警告] 尝试修改非法字段: ${key}，已拒绝`);
+      continue; // 跳过非法字段，不抛出错误（避免泄露白名单信息）
+    }
+
+    // ✅ 字段在白名单中，可以安全更新
+    if (key === 'preferences' && typeof value === 'object') {
+      // preferences 是 JSONB，需要转换为 JSON 字符串
+      updateFields.push(`${key} = $${paramIndex}`);
+      values.push(JSON.stringify(value));
+    } else {
+      updateFields.push(`${key} = $${paramIndex}`);
+      values.push(value);
+    }
+    paramIndex++;
   }
 
   if (updateFields.length === 0) {
