@@ -1,7 +1,8 @@
 import { randomUUID } from 'crypto';
 import jwt from 'jsonwebtoken';
-import { pool } from '../config/database';
+import { pool, queryWithTimeout } from '../config/database';
 import { hashPassword, verifyPassword } from '../utils/password';
+import { sendPasswordResetEmail } from './email.service';
 
 /**
  * 认证服务模块
@@ -210,11 +211,14 @@ export async function login(
     throw new Error('邮箱和密码不能为空');
   }
 
-  // 查询用户
-  const result = await pool.query(
+  console.log(`[Auth Service] 开始查询用户: ${email}`);
+  // 查询用户（使用带超时的查询）
+  const result = await queryWithTimeout(
     'SELECT id, email, encrypted_password FROM auth.users WHERE email = $1',
-    [email.toLowerCase()]
+    [email.toLowerCase()],
+    5000 // 5秒超时
   );
+  console.log(`[Auth Service] 用户查询完成，找到 ${result.rows.length} 条记录`);
 
   if (result.rows.length === 0) {
     throw new Error('邮箱或密码错误');
@@ -301,4 +305,91 @@ export async function getUserById(userId: string): Promise<User | null> {
   }
 
   return result.rows[0] as User;
+}
+
+/**
+ * 根据邮箱获取用户信息
+ * 
+ * @param email 用户邮箱
+ * @returns Promise<User | null> 用户信息或 null
+ */
+export async function getUserByEmail(email: string): Promise<User | null> {
+  const result = await pool.query(
+    'SELECT id, email, encrypted_password, created_at FROM auth.users WHERE email = $1',
+    [email.toLowerCase()]
+  );
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  return result.rows[0] as User;
+}
+
+/**
+ * 请求密码重置
+ * 验证邮箱是否存在，生成密码重置 Token，并发送重置邮件
+ * 
+ * @param email 用户邮箱
+ * @returns Promise<{ success: boolean; message: string }> 请求结果
+ */
+export async function requestPasswordReset(
+  email: string
+): Promise<{ success: boolean; message: string }> {
+  // 验证输入
+  if (!email || !email.includes('@')) {
+    throw new Error('邮箱格式不正确');
+  }
+
+  // 查询用户是否存在
+  const user = await getUserByEmail(email);
+
+  // 为了安全，无论用户是否存在都返回成功消息（防止邮箱枚举攻击）
+  // 但实际只在用户存在时发送邮件
+  if (!user) {
+    // 用户不存在，但仍返回成功消息（安全考虑）
+    console.log(`⚠️  密码重置请求：邮箱 ${email} 不存在，但返回成功消息（安全考虑）`);
+    return {
+      success: true,
+      message: '如果该邮箱已注册，密码重置链接已发送到您的邮箱',
+    };
+  }
+
+  // 生成密码重置 Token（JWT，有效期 1 小时）
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret) {
+    throw new Error('JWT_SECRET 未配置');
+  }
+
+  // 生成重置 Token，包含用户ID和邮箱，有效期 1 小时
+  const resetToken = jwt.sign(
+    {
+      userId: user.id,
+      email: user.email,
+      type: 'password_reset', // 标记为密码重置 Token
+    },
+    jwtSecret,
+    {
+      expiresIn: '1h', // 1 小时有效期
+    } as jwt.SignOptions
+  );
+
+  // 发送密码重置邮件
+  const emailSent = await sendPasswordResetEmail(email, resetToken, '');
+
+  if (!emailSent) {
+    // 如果邮件发送失败，记录错误但为了安全仍返回成功消息
+    console.error(`❌ 密码重置邮件发送失败：${email}`);
+    // 在生产环境中，如果邮件服务配置了但发送失败，应该抛出错误
+    // 但在开发环境中，允许继续（因为可能只是日志模式）
+    const isDevelopment = process.env.NODE_ENV !== 'production';
+    if (!isDevelopment) {
+      throw new Error('邮件发送失败，请稍后重试');
+    }
+  }
+
+  return {
+    success: true,
+    message: '如果该邮箱已注册，密码重置链接已发送到您的邮箱',
+  };
 }

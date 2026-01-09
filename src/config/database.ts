@@ -31,11 +31,27 @@ pool.on('error', (err) => {
   process.exit(-1);
 });
 
+// ✅ 封装一个带超时的查询函数
+export async function queryWithTimeout<T extends pg.QueryResultRow = any>(
+  text: string,
+  params?: any[],
+  timeoutMs: number = 5000
+): Promise<pg.QueryResult<T>> {
+  return Promise.race([
+    pool.query<T>(text, params),
+    new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`数据库查询超时 (${timeoutMs}ms)`));
+      }, timeoutMs);
+    }),
+  ]);
+}
+
 // ✅ 封装一个健康检查函数
 export async function checkDatabaseHealth(): Promise<boolean> {
   try {
     const start = Date.now();
-    await pool.query('SELECT 1'); // 最简单的查询
+    await queryWithTimeout('SELECT 1', [], 2000); // 2秒超时
     const duration = Date.now() - start;
     console.log(`💓 数据库心跳正常 (${duration}ms)`);
     return true;

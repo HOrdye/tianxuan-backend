@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { register as registerUser, login as loginUser, getUserById, verifyToken } from '../services/auth.service';
+import { register as registerUser, login as loginUser, getUserById, verifyToken, requestPasswordReset } from '../services/auth.service';
 import { validatePasswordStrength } from '../utils/password';
 import { AuthRequest } from '../middleware/auth.middleware';
 
@@ -92,10 +92,12 @@ export async function register(req: Request, res: Response): Promise<void> {
  */
 export async function login(req: Request, res: Response): Promise<void> {
   try {
+    console.log(`[Login Controller] 收到登录请求: ${req.body.email}`);
     const { email, password } = req.body;
 
     // 验证必填字段
     if (!email || !password) {
+      console.log(`[Login Controller] 验证失败: 邮箱或密码为空`);
       res.status(400).json({
         success: false,
         error: '邮箱和密码不能为空',
@@ -103,8 +105,10 @@ export async function login(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    console.log(`[Login Controller] 开始调用登录服务...`);
     // 调用登录服务
     const result = await loginUser(email, password);
+    console.log(`[Login Controller] 登录服务调用成功`);
 
     // 返回成功响应
     res.status(200).json({
@@ -182,6 +186,81 @@ export async function getCurrentUser(
       success: false,
       error: '获取用户信息失败',
       message: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+}
+
+/**
+ * 请求密码重置控制器
+ * POST /api/auth/reset-password
+ * 
+ * 请求体：{ email: string }
+ * 响应：{ success: boolean, message: string }
+ */
+export async function resetPassword(req: Request, res: Response): Promise<void> {
+  try {
+    const { email } = req.body;
+
+    // 验证必填字段
+    if (!email) {
+      res.status(400).json({
+        success: false,
+        message: '邮箱不能为空',
+      });
+      return;
+    }
+
+    // 验证邮箱格式
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      res.status(400).json({
+        success: false,
+        message: '邮箱格式不正确',
+      });
+      return;
+    }
+
+    // 调用密码重置服务
+    const result = await requestPasswordReset(email);
+
+    // 返回成功响应
+    res.status(200).json({
+      success: result.success,
+      message: result.message,
+    });
+  } catch (error: any) {
+    console.error('密码重置请求失败:', error);
+
+    // 处理已知错误
+    if (error.message === '邮箱格式不正确') {
+      res.status(400).json({
+        success: false,
+        message: error.message,
+      });
+      return;
+    }
+
+    if (error.message === 'JWT_SECRET 未配置') {
+      res.status(500).json({
+        success: false,
+        message: '服务器配置错误',
+      });
+      return;
+    }
+
+    if (error.message === '邮件发送失败，请稍后重试') {
+      res.status(500).json({
+        success: false,
+        message: error.message,
+      });
+      return;
+    }
+
+    // 处理其他错误
+    res.status(500).json({
+      success: false,
+      message: '密码重置请求失败，请稍后重试',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   }
 }

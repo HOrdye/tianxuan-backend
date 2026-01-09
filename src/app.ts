@@ -24,6 +24,28 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// 🔍 请求日志中间件（用于调试）
+app.use((req, res, next) => {
+  const start = Date.now();
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} - 请求开始`);
+  
+  // 监听响应完成
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} - 响应完成 (${duration}ms)`);
+  });
+  
+  // 监听响应关闭（客户端断开连接）
+  res.on('close', () => {
+    const duration = Date.now() - start;
+    if (!res.headersSent) {
+      console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} - 响应未发送就关闭 (${duration}ms)`);
+    }
+  });
+  
+  next();
+});
+
 // 🏠 根路由
 app.get('/', (req, res) => {
   res.json({ 
