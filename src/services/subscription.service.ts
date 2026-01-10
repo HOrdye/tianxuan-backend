@@ -211,33 +211,81 @@ export async function getSubscriptionStatus(
     }
 
     const profile = profileResult.rows[0];
-    let tier: Tier = (profile.tier || 'free') as Tier;
+    let tier: Tier = 'free';
     let status: SubscriptionStatus = 'active';
     let expiresAt: Date | null = null;
 
-    // 如果 profiles.tier 存在，使用它
+    // 🟢 修复：处理 tier 值映射（数据库可能使用 'guest' 或 'explorer'，需要映射到 'free'）
+    // 如果 profiles.tier 存在，使用它（需要映射到有效的 Tier 类型）
     if (profile.tier) {
-      tier = profile.tier as Tier;
+      const dbTier = profile.tier.toLowerCase();
+      // 映射数据库 tier 值到代码中的 Tier 类型
+      if (dbTier === 'guest' || dbTier === 'explorer') {
+        tier = 'free';
+      } else if (['free', 'basic', 'premium', 'vip'].includes(dbTier)) {
+        tier = dbTier as Tier;
+      } else {
+        // 未知的 tier 值，默认使用 'free'
+        console.warn(`未知的 tier 值: ${profile.tier}，使用默认值 'free'`);
+        tier = 'free';
+      }
       
-      // 检查订阅是否过期
-      if (profile.subscription_end_at) {
+      // 🟢 关键修复：如果 profiles.tier 不正确（如 'guest'），从 subscriptions 表读取正确的 tier
+      // 查询 subscriptions 表获取正确的 tier（优先使用 subscriptions 表的 tier）
+      const subscriptionCheck = await pool.query(
+        `SELECT tier, status, expires_at 
+         FROM public.subscriptions 
+         WHERE user_id = $1 
+           AND status IN ('active', 'cancelled')
+         ORDER BY created_at DESC 
+         LIMIT 1`,
+        [userId]
+      );
+
+      if (subscriptionCheck.rows.length > 0) {
+        const sub = subscriptionCheck.rows[0];
+        const subTier = sub.tier?.toLowerCase();
+        // 使用 subscriptions 表的 tier（更准确）
+        if (['free', 'basic', 'premium', 'vip'].includes(subTier)) {
+          tier = subTier as Tier;
+        }
+        expiresAt = sub.expires_at || profile.subscription_end_at;
+        status = sub.status as SubscriptionStatus;
+      } else {
+        // 如果没有订阅记录，使用 profiles 表的 tier
         expiresAt = profile.subscription_end_at;
+      }
+
+      // 检查订阅是否过期
+      if (expiresAt) {
         const now = new Date();
-        if (expiresAt && expiresAt < now) {
+        if (expiresAt < now) {
+          // 🟢 只有真正过期时，才降级为免费用户
           status = 'expired';
           tier = 'free'; // 过期后降级为免费用户
         } else {
+          // 🟢 关键修复：即使 subscription_status = 'cancelled'，只要还没过期，tier 保持不变
+          // 取消订阅 ≠ 立即终止权益，权益保留到 expires_at
+          if (!subscriptionCheck.rows.length) {
+            status = (profile.subscription_status || 'active') as SubscriptionStatus;
+          }
+          // tier 保持原值，不修改
+        }
+      } else {
+        // 如果没有过期时间，使用 subscription_status
+        if (!subscriptionCheck.rows.length) {
           status = (profile.subscription_status || 'active') as SubscriptionStatus;
         }
       }
     } else {
       // 2. 如果 profiles.tier 不存在，查询 subscriptions 表
       // ✅ 数据库表结构已修复：可以使用 expires_at 字段
+      // 🟢 修复：也查询 'cancelled' 状态的订阅（可能已取消但还没过期）
       const subscriptionResult = await pool.query(
         `SELECT tier, status, expires_at 
          FROM public.subscriptions 
          WHERE user_id = $1 
-           AND status IN ('active', 'pending')
+           AND status IN ('active', 'pending', 'cancelled')
          ORDER BY created_at DESC 
          LIMIT 1`,
         [userId]
@@ -245,15 +293,25 @@ export async function getSubscriptionStatus(
 
       if (subscriptionResult.rows.length > 0) {
         const sub = subscriptionResult.rows[0];
-        tier = sub.tier as Tier;
+        const dbTier = sub.tier?.toLowerCase();
+        // 映射数据库 tier 值到代码中的 Tier 类型
+        if (dbTier === 'guest' || dbTier === 'explorer') {
+          tier = 'free';
+        } else if (['free', 'basic', 'premium', 'vip'].includes(dbTier)) {
+          tier = dbTier as Tier;
+        } else {
+          tier = 'free';
+        }
         status = sub.status as SubscriptionStatus;
         expiresAt = sub.expires_at;
         
         // 检查是否过期
         if (expiresAt && expiresAt < new Date()) {
+          // 只有真正过期时，才降级为免费用户
           status = 'expired';
           tier = 'free';
         }
+        // 🟢 关键：如果 status = 'cancelled' 但还没过期，tier 保持不变
       }
     }
 
@@ -505,8 +563,10 @@ export async function cancelSubscription(
   try {
     await client.query('BEGIN');
 
-    // 1. 查询当前活跃订阅（只查询 active 状态，不包括 pending）
-    const subscriptionResult = await client.query(
+    // 1. 查询当前订阅（优先查询 active，如果没有则查询 cancelled）
+    // 使用 FOR UPDATE 锁定行，防止并发问题
+    // 🟢 修复：先查询 active，如果没有再查询 cancelled（处理重复取消的情况）
+    let subscriptionResult = await client.query(
       `SELECT 
          id, 
          user_id, 
@@ -521,9 +581,33 @@ export async function cancelSubscription(
        WHERE user_id = $1 
          AND status = 'active'
        ORDER BY created_at DESC 
-       LIMIT 1`,
+       LIMIT 1
+       FOR UPDATE`,
       [userId]
     );
+
+    // 如果没有 active 订阅，查询 cancelled 订阅（处理重复取消）
+    if (subscriptionResult.rows.length === 0) {
+      subscriptionResult = await client.query(
+        `SELECT 
+           id, 
+           user_id, 
+           tier, 
+           status, 
+           auto_renew,
+           expires_at,
+           started_at,
+           created_at,
+           updated_at
+         FROM public.subscriptions 
+         WHERE user_id = $1 
+           AND status = 'cancelled'
+         ORDER BY created_at DESC 
+         LIMIT 1
+         FOR UPDATE`,
+        [userId]
+      );
+    }
 
     // 2. 检查是否找到订阅
     if (subscriptionResult.rows.length === 0) {
@@ -533,8 +617,8 @@ export async function cancelSubscription(
 
     const subscription = subscriptionResult.rows[0];
 
-    // 3. 检查是否已经取消过（auto_renew = false）
-    if (subscription.auto_renew === false) {
+    // 3. 检查是否已经取消过（status = 'cancelled' 或 auto_renew = false）
+    if (subscription.status === 'cancelled' || subscription.auto_renew === false) {
       await client.query('ROLLBACK');
       
       // 已取消，返回提示信息
@@ -567,16 +651,30 @@ export async function cancelSubscription(
       };
     }
 
-    // 4. 更新订阅：仅设置 auto_renew = false，不修改 status
+    // 4. 更新订阅表：标记为 'cancelled'，关闭自动续费
+    // ⚠️ 注意：expires_at 保持不变！权益期还在！
     await client.query(
       `UPDATE public.subscriptions 
-       SET auto_renew = false,
+       SET status = 'cancelled', 
+           auto_renew = false,
            updated_at = NOW()
        WHERE id = $1`,
       [subscription.id]
     );
 
-    // 5. 重新查询更新后的订阅信息
+    // 5. 🟢 关键修复：更新 profiles 表
+    // ❌ 绝对不要把 tier 改成 'free'！
+    // ✅ 只更新 subscription_status 状态，保留 tier 和过期时间
+    await client.query(
+      `UPDATE public.profiles 
+       SET subscription_status = 'cancelled',
+           updated_at = NOW()
+       -- 注意：这里不要写 tier = 'free'，也不要清空 subscription_end_at
+       WHERE id = $1`,
+      [userId]
+    );
+
+    // 6. 重新查询更新后的订阅信息
     const updatedResult = await client.query(
       `SELECT 
          id, 
@@ -598,7 +696,7 @@ export async function cancelSubscription(
       ? new Date(updatedSubscription.expires_at) 
       : null;
     
-    // 6. 格式化到期时间提示
+    // 7. 格式化到期时间提示
     const expiresAtStr = expiresAt 
       ? expiresAt.toLocaleDateString('zh-CN', { 
           year: 'numeric', 
