@@ -1,6 +1,14 @@
 import { Response } from 'express';
 import * as paymentService from '../services/payment.service';
 import { AuthRequest } from '../middleware/auth.middleware';
+import {
+  sendSuccess,
+  sendError,
+  sendUnauthorized,
+  sendBadRequest,
+  sendNotFound,
+  sendInternalError,
+} from '../utils/response';
 
 /**
  * 支付控制器模块
@@ -18,81 +26,72 @@ export async function createOrder(
   try {
     // 检查认证
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: '未认证',
-      });
+      sendUnauthorized(res);
       return;
     }
 
     const userId = req.user.userId;
-    const { amount, coinsAmount, packType, paymentProvider, description } = req.body;
+    const { amount, coinsAmount, itemType, packType, paymentProvider, description } = req.body;
 
     // 参数验证
     if (!amount || typeof amount !== 'number' || amount <= 0) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: '支付金额 (amount) 必须提供且大于0',
-      });
+      sendBadRequest(res, '支付金额 (amount) 必须提供且大于0');
       return;
     }
 
-    if (!coinsAmount || typeof coinsAmount !== 'number' || coinsAmount <= 0) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: '天机币数量 (coinsAmount) 必须提供且大于0',
-      });
-      return;
+    // 🟢 修复：根据 itemType 判断是否需要 coinsAmount
+    // 如果是订阅订单（itemType === 'subscription'），则不需要 coinsAmount
+    // 如果是充值订单（itemType === 'coin_pack' 或未指定），则需要 coinsAmount
+    const finalItemType = itemType || 'coin_pack';
+    const isSubscription = finalItemType === 'subscription';
+    
+    if (!isSubscription) {
+      // 充值订单必须提供 coinsAmount
+      if (!coinsAmount || typeof coinsAmount !== 'number' || coinsAmount <= 0) {
+        sendBadRequest(res, '天机币数量 (coinsAmount) 必须提供且大于0');
+        return;
+      }
     }
 
     // 执行创建订单
     const result = await paymentService.createOrder(
       userId,
       amount,
-      coinsAmount,
+      coinsAmount, // 订阅订单可以为 undefined
+      finalItemType, // 传递 itemType
       packType,
       paymentProvider,
       description
     );
 
-    // 返回成功结果
-    res.status(200).json({
-      success: true,
-      message: result.message || '订单创建成功',
-      data: {
-        order_id: result.order_id,
+    // 返回成功结果 - 确保数据结构统一，包含所有字段
+    sendSuccess(
+      res,
+      {
+        orderId: result.order_id, // 统一使用 camelCase
+        order_id: result.order_id, // 保留 snake_case 以兼容旧代码
+        amount: result.amount, // 支付金额
+        payment_url: result.payment_url, // 支付链接
+        paymentUrl: result.payment_url, // 兼容 camelCase 命名
       },
-    });
+      result.message || '订单创建成功'
+    );
   } catch (error: any) {
     console.error('创建订单失败:', error);
 
     // 根据错误类型返回不同的状态码
     if (error.message?.includes('用户不存在')) {
-      res.status(404).json({
-        success: false,
-        error: '用户不存在',
-        message: error.message,
-      });
+      sendNotFound(res, error.message);
       return;
     }
 
-    if (error.message?.includes('参数错误')) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: error.message,
-      });
+    if (error.message?.includes('参数错误') || error.message?.includes('新人礼仅限首次购买')) {
+      sendBadRequest(res, error.message);
       return;
     }
 
     // 其他错误
-    res.status(500).json({
-      success: false,
-      error: '创建订单失败',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, undefined, error);
   }
 }
 
@@ -140,52 +139,38 @@ export async function handlePaymentCallback(
       paidAt ? new Date(paidAt) : undefined
     );
 
-    // 返回成功结果
-    res.status(200).json({
-      success: true,
-      message: result.message || '支付回调处理成功',
-      data: {
-        order_id: result.order_id,
-        new_balance: result.new_balance,
+    // 返回成功结果 - 确保数据结构统一
+    sendSuccess(
+      res,
+      {
+        orderId: result.order_id,
+        order_id: result.order_id, // 兼容旧代码
+        newBalance: result.new_balance,
+        new_balance: result.new_balance, // 兼容旧代码
       },
-    });
+      result.message || '支付回调处理成功'
+    );
   } catch (error: any) {
     console.error('处理支付回调失败:', error);
 
     // 根据错误类型返回不同的状态码
     if (error.message?.includes('订单不存在')) {
-      res.status(404).json({
-        success: false,
-        error: '订单不存在',
-        message: error.message,
-      });
+      sendNotFound(res, error.message);
       return;
     }
 
     if (error.message?.includes('不能重复处理')) {
-      res.status(400).json({
-        success: false,
-        error: '订单已处理',
-        message: error.message,
-      });
+      sendBadRequest(res, error.message);
       return;
     }
 
     if (error.message?.includes('参数错误')) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: error.message,
-      });
+      sendBadRequest(res, error.message);
       return;
     }
 
     // 其他错误
-    res.status(500).json({
-      success: false,
-      error: '处理支付回调失败',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, undefined, error);
   }
 }
 
@@ -218,13 +203,10 @@ export async function getOrders(
       ? parseInt(req.query.offset as string, 10)
       : 0;
 
-    // 参数验证
-    if (status && status !== 'pending' && status !== 'completed' && status !== 'failed') {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: 'status 必须是 pending、completed 或 failed',
-      });
+    // 参数验证 - 允许的状态：pending, paid, completed, failed
+    const allowedStatuses = ['pending', 'paid', 'completed', 'failed'];
+    if (status && !allowedStatuses.includes(status as string)) {
+      sendBadRequest(res, `status 必须是 ${allowedStatuses.join(', ')} 之一`);
       return;
     }
 
@@ -249,33 +231,25 @@ export async function getOrders(
     // 查询订单列表
     const orders = await paymentService.getOrders(userId, status, limit, offset);
 
-    // 返回订单列表
-    res.status(200).json({
-      success: true,
-      data: {
-        orders,
+    // 返回订单列表 - 确保数据结构统一
+    sendSuccess(res, {
+      orders,
+      pagination: {
         limit,
         offset,
         count: orders.length,
+        total: orders.length, // 简化版，实际应该从数据库查询总数
       },
     });
   } catch (error: any) {
     console.error('查询订单列表失败:', error);
 
     if (error.message?.includes('参数错误')) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: error.message,
-      });
+      sendBadRequest(res, error.message);
       return;
     }
 
-    res.status(500).json({
-      success: false,
-      error: '查询订单列表失败',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, undefined, error);
   }
 }
 
@@ -321,28 +295,17 @@ export async function getOrderById(
       return;
     }
 
-    // 返回订单详情
-    res.status(200).json({
-      success: true,
-      data: order,
-    });
+    // 返回订单详情 - 确保数据结构统一
+    sendSuccess(res, order);
   } catch (error: any) {
     console.error('查询订单详情失败:', error);
 
     if (error.message?.includes('参数错误')) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: error.message,
-      });
+      sendBadRequest(res, error.message);
       return;
     }
 
-    res.status(500).json({
-      success: false,
-      error: '查询订单详情失败',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, undefined, error);
   }
 }
 
@@ -388,64 +351,165 @@ export async function handleMockPaymentSuccess(
       return;
     }
 
-    // 4. 生成 Mock 支付提供商交易ID
-    const mockProviderTransactionId = `MOCK_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    // 4. 调用 Service 层的 Mock 支付逻辑（将状态设置为 'paid'）
+    const result = await paymentService.mockPaySuccess(orderId);
 
-    // 5. 调用 Service 层的处理逻辑（复用真实支付的逻辑）
-    const result = await paymentService.handlePaymentSuccess(
-      orderId,
-      mockProviderTransactionId
-    );
-
-    // 6. 返回成功结果
-    res.status(200).json({
-      success: true,
-      message: result.message || 'Mock 支付成功，天机币已发放',
-      data: {
-        order_id: result.order_id,
-        new_balance: result.new_balance,
-        provider_transaction_id: mockProviderTransactionId,
+    // 5. 返回成功结果 - 确保数据结构统一
+    sendSuccess(
+      res,
+      {
+        orderId: result.order_id || orderId,
+        order_id: result.order_id || orderId, // 兼容旧代码
+        newBalance: result.new_balance,
+        new_balance: result.new_balance, // 兼容旧代码
       },
-    });
+      result.message || 'Mock 支付成功，天机币已发放'
+    );
   } catch (error: any) {
     console.error('Mock 支付失败:', error);
 
     // 根据错误类型返回不同的状态码
     if (error.message?.includes('订单不存在')) {
-      res.status(404).json({
-        success: false,
-        error: '订单不存在',
-        message: error.message,
-      });
+      sendNotFound(res, error.message);
       return;
     }
 
-    if (error.message?.includes('订单已处理过')) {
-      res.status(200).json({
-        success: true,
-        message: '订单已处理过，不会重复发放',
-        data: {
-          order_id: req.body.orderId,
-          already_processed: true,
-        },
-      });
+    if (error.message?.includes('订单已支付')) {
+      // mockPaySuccess 函数已经处理了幂等性，这里不需要特殊处理
+      // 如果函数返回成功，说明订单已支付，直接返回成功响应
       return;
     }
 
     if (error.message?.includes('参数错误')) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: error.message,
-      });
+      sendBadRequest(res, error.message);
       return;
     }
 
     // 其他错误
-    res.status(500).json({
-      success: false,
-      error: 'Mock 处理失败',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, undefined, error);
+  }
+}
+
+/**
+ * [开发专用] 模拟支付失败控制器
+ * POST /api/payment/mock/fail
+ * 
+ * 注意：此接口仅在开发环境可用，生产环境会被拒绝
+ */
+export async function handleMockPaymentFail(
+  req: AuthRequest,
+  res: Response
+): Promise<void> {
+  try {
+    // 1. 安全检查：仅限开发环境
+    if (process.env.NODE_ENV !== 'development') {
+      sendError(res, '生产环境禁止使用 Mock 支付', 'Mock 支付功能仅在开发环境可用', 403);
+      return;
+    }
+
+    // 2. 检查认证
+    if (!req.user) {
+      sendUnauthorized(res);
+      return;
+    }
+
+    const { orderId } = req.body;
+
+    // 3. 参数验证
+    if (!orderId || typeof orderId !== 'string') {
+      sendBadRequest(res, '订单ID (orderId) 必须提供且为字符串');
+      return;
+    }
+
+    // 4. 调用 Service 层的 Mock 支付失败逻辑
+    const result = await paymentService.mockPayFail(orderId);
+
+    // 5. 返回成功结果
+    sendSuccess(
+      res,
+      {
+        orderId: result.order_id || orderId,
+        order_id: result.order_id || orderId, // 兼容旧代码
+      },
+      result.message || 'Mock 支付失败已触发'
+    );
+  } catch (error: any) {
+    console.error('Mock 支付失败处理错误:', error);
+
+    // 根据错误类型返回不同的状态码
+    if (error.message?.includes('订单不存在')) {
+      sendNotFound(res, error.message);
+      return;
+    }
+
+    if (error.message?.includes('参数错误')) {
+      sendBadRequest(res, error.message);
+      return;
+    }
+
+    // 其他错误
+    sendInternalError(res, undefined, error);
+  }
+}
+
+/**
+ * [开发专用] 模拟支付取消控制器
+ * POST /api/payment/mock/cancel
+ * 
+ * 注意：此接口仅在开发环境可用，生产环境会被拒绝
+ */
+export async function handleMockPaymentCancel(
+  req: AuthRequest,
+  res: Response
+): Promise<void> {
+  try {
+    // 1. 安全检查：仅限开发环境
+    if (process.env.NODE_ENV !== 'development') {
+      sendError(res, '生产环境禁止使用 Mock 支付', 'Mock 支付功能仅在开发环境可用', 403);
+      return;
+    }
+
+    // 2. 检查认证
+    if (!req.user) {
+      sendUnauthorized(res);
+      return;
+    }
+
+    const { orderId } = req.body;
+
+    // 3. 参数验证
+    if (!orderId || typeof orderId !== 'string') {
+      sendBadRequest(res, '订单ID (orderId) 必须提供且为字符串');
+      return;
+    }
+
+    // 4. 调用 Service 层的 Mock 支付取消逻辑
+    const result = await paymentService.mockPayCancel(orderId);
+
+    // 5. 返回成功结果
+    sendSuccess(
+      res,
+      {
+        orderId: result.order_id || orderId,
+        order_id: result.order_id || orderId, // 兼容旧代码
+      },
+      result.message || 'Mock 支付取消已触发'
+    );
+  } catch (error: any) {
+    console.error('Mock 支付取消处理错误:', error);
+
+    // 根据错误类型返回不同的状态码
+    if (error.message?.includes('订单不存在')) {
+      sendNotFound(res, error.message);
+      return;
+    }
+
+    if (error.message?.includes('参数错误')) {
+      sendBadRequest(res, error.message);
+      return;
+    }
+
+    // 其他错误
+    sendInternalError(res, undefined, error);
   }
 }

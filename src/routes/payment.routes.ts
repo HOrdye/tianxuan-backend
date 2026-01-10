@@ -5,6 +5,8 @@ import {
   getOrders,
   getOrderById,
   handleMockPaymentSuccess,
+  handleMockPaymentFail,
+  handleMockPaymentCancel,
 } from '../controllers/payment.controller';
 import { authenticateToken, optionalAuthenticateToken } from '../middleware/auth.middleware';
 
@@ -170,6 +172,8 @@ router.get('/orders/:orderId', authenticateToken, getOrderById);
  */
 if (process.env.NODE_ENV === 'development') {
   router.post('/mock/success', authenticateToken, handleMockPaymentSuccess);
+  router.post('/mock/fail', authenticateToken, handleMockPaymentFail);
+  router.post('/mock/cancel', authenticateToken, handleMockPaymentCancel);
 }
 
 export default router;

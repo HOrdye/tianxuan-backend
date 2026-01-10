@@ -1,7 +1,16 @@
 import { Request, Response } from 'express';
 import { register as registerUser, login as loginUser, getUserById, verifyToken, requestPasswordReset } from '../services/auth.service';
+import { getProfile } from '../services/user.service';
 import { validatePasswordStrength } from '../utils/password';
 import { AuthRequest } from '../middleware/auth.middleware';
+import {
+  sendSuccess,
+  sendBadRequest,
+  sendUnauthorized,
+  sendNotFound,
+  sendConflict,
+  sendInternalError,
+} from '../utils/response';
 
 /**
  * 认证控制器模块
@@ -18,38 +27,26 @@ export async function register(req: Request, res: Response): Promise<void> {
 
     // 验证必填字段
     if (!email) {
-      res.status(400).json({
-        success: false,
-        error: '邮箱不能为空',
-      });
+      sendBadRequest(res, '邮箱不能为空');
       return;
     }
 
     if (!password) {
-      res.status(400).json({
-        success: false,
-        error: '密码不能为空',
-      });
+      sendBadRequest(res, '密码不能为空');
       return;
     }
 
     // 验证密码强度
     const passwordValidation = validatePasswordStrength(password);
     if (!passwordValidation.isValid) {
-      res.status(400).json({
-        success: false,
-        error: passwordValidation.message,
-      });
+      sendBadRequest(res, passwordValidation.message);
       return;
     }
 
     // 验证邮箱格式
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
-      res.status(400).json({
-        success: false,
-        error: '邮箱格式不正确',
-      });
+      sendBadRequest(res, '邮箱格式不正确');
       return;
     }
 
@@ -57,11 +54,7 @@ export async function register(req: Request, res: Response): Promise<void> {
     const result = await registerUser(email, password, username);
 
     // 返回成功响应
-    res.status(201).json({
-      success: true,
-      message: '注册成功',
-      data: result,
-    });
+    sendSuccess(res, result, '注册成功', 201);
   } catch (error: any) {
     console.error('注册失败:', error);
 
@@ -70,19 +63,12 @@ export async function register(req: Request, res: Response): Promise<void> {
       error.message === '该邮箱已被注册' ||
       error.message === '该邮箱或用户名已被使用'
     ) {
-      res.status(409).json({
-        success: false,
-        error: error.message,
-      });
+      sendConflict(res, error.message);
       return;
     }
 
     // 处理其他错误
-    res.status(500).json({
-      success: false,
-      error: '注册失败，请稍后重试',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, undefined, error);
   }
 }
 
@@ -98,10 +84,7 @@ export async function login(req: Request, res: Response): Promise<void> {
     // 验证必填字段
     if (!email || !password) {
       console.log(`[Login Controller] 验证失败: 邮箱或密码为空`);
-      res.status(400).json({
-        success: false,
-        error: '邮箱和密码不能为空',
-      });
+      sendBadRequest(res, '邮箱和密码不能为空');
       return;
     }
 
@@ -111,11 +94,7 @@ export async function login(req: Request, res: Response): Promise<void> {
     console.log(`[Login Controller] 登录服务调用成功`);
 
     // 返回成功响应
-    res.status(200).json({
-      success: true,
-      message: '登录成功',
-      data: result,
-    });
+    sendSuccess(res, result, '登录成功');
   } catch (error: any) {
     console.error('登录失败:', error);
 
@@ -124,19 +103,12 @@ export async function login(req: Request, res: Response): Promise<void> {
       error.message === '邮箱或密码错误' ||
       error.message === '用户不存在'
     ) {
-      res.status(401).json({
-        success: false,
-        error: '邮箱或密码错误',
-      });
+      sendUnauthorized(res, '邮箱或密码错误');
       return;
     }
 
     // 处理其他错误
-    res.status(500).json({
-      success: false,
-      error: '登录失败，请稍后重试',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, undefined, error);
   }
 }
 
@@ -152,41 +124,35 @@ export async function getCurrentUser(
   try {
     // 从认证中间件获取用户信息
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: '未认证',
-      });
+      sendUnauthorized(res);
       return;
     }
 
-    // 从数据库获取完整的用户信息（可选）
-    const user = await getUserById(req.user.userId);
+    // 从数据库获取完整的用户信息（包含 profiles 表的数据）
+    const profile = await getProfile(req.user.userId);
 
-    if (!user) {
-      res.status(404).json({
-        success: false,
-        error: '用户不存在',
-      });
+    if (!profile) {
+      sendNotFound(res, '用户不存在');
       return;
     }
 
-    // 返回用户信息（不包含密码）
-    res.status(200).json({
-      success: true,
-      data: {
-        userId: user.id,
-        email: user.email,
-        createdAt: user.created_at,
-      },
+    // 返回用户信息（包含 tier、balance 等 profiles 表的数据）
+    sendSuccess(res, {
+      userId: profile.id,
+      email: profile.email,
+      username: profile.username,
+      tier: profile.tier,
+      balance: profile.tianji_coins_balance || 0,
+      role: profile.role,
+      avatar_url: profile.avatar_url,
+      createdAt: profile.created_at,
+      // 保留下划线命名以兼容旧代码
+      user_id: profile.id,
+      tianji_coins_balance: profile.tianji_coins_balance || 0,
     });
   } catch (error: any) {
     console.error('获取用户信息失败:', error);
-
-    res.status(500).json({
-      success: false,
-      error: '获取用户信息失败',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, undefined, error);
   }
 }
 
@@ -203,20 +169,14 @@ export async function resetPassword(req: Request, res: Response): Promise<void> 
 
     // 验证必填字段
     if (!email) {
-      res.status(400).json({
-        success: false,
-        message: '邮箱不能为空',
-      });
+      sendBadRequest(res, '邮箱不能为空');
       return;
     }
 
     // 验证邮箱格式
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
-      res.status(400).json({
-        success: false,
-        message: '邮箱格式不正确',
-      });
+      sendBadRequest(res, '邮箱格式不正确');
       return;
     }
 
@@ -224,43 +184,22 @@ export async function resetPassword(req: Request, res: Response): Promise<void> 
     const result = await requestPasswordReset(email);
 
     // 返回成功响应
-    res.status(200).json({
-      success: result.success,
-      message: result.message,
-    });
+    sendSuccess(res, null, result.message);
   } catch (error: any) {
     console.error('密码重置请求失败:', error);
 
     // 处理已知错误
     if (error.message === '邮箱格式不正确') {
-      res.status(400).json({
-        success: false,
-        message: error.message,
-      });
+      sendBadRequest(res, error.message);
       return;
     }
 
-    if (error.message === 'JWT_SECRET 未配置') {
-      res.status(500).json({
-        success: false,
-        message: '服务器配置错误',
-      });
-      return;
-    }
-
-    if (error.message === '邮件发送失败，请稍后重试') {
-      res.status(500).json({
-        success: false,
-        message: error.message,
-      });
+    if (error.message === 'JWT_SECRET 未配置' || error.message === '邮件发送失败，请稍后重试') {
+      sendInternalError(res, error.message, error);
       return;
     }
 
     // 处理其他错误
-    res.status(500).json({
-      success: false,
-      message: '密码重置请求失败，请稍后重试',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, undefined, error);
   }
 }

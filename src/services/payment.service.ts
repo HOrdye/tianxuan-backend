@@ -33,6 +33,8 @@ export interface PaymentOrder {
 export interface CreateOrderResult {
   success: boolean;
   order_id: string;
+  amount: number;       // 支付金额（人民币，单位：元）
+  payment_url?: string; // 支付链接（可选，如果使用第三方支付会生成）
   message?: string;
   error?: string;
 }
@@ -53,7 +55,8 @@ export interface PaymentCallbackResult {
  * 
  * @param userId 用户ID
  * @param amount 支付金额（人民币，单位：元）
- * @param coinsAmount 购买的天机币数量
+ * @param coinsAmount 购买的天机币数量（可选，订阅订单不需要）
+ * @param itemType 订单类型（可选，'subscription' | 'coin_pack'，默认为 'coin_pack'）
  * @param packType 套餐类型（可选，如 'coins_pack_1', 'coins_pack_2' 等）
  * @param paymentProvider 支付提供商（可选，如 'alipay', 'wechat' 等）
  * @param description 订单描述（可选）
@@ -64,7 +67,8 @@ export interface PaymentCallbackResult {
 export async function createOrder(
   userId: string,
   amount: number,
-  coinsAmount: number,
+  coinsAmount?: number,
+  itemType?: string,
   packType?: string,
   paymentProvider?: string,
   description?: string
@@ -78,8 +82,17 @@ export async function createOrder(
     throw new Error('参数错误：支付金额必须大于0');
   }
 
-  if (!coinsAmount || coinsAmount <= 0) {
-    throw new Error('参数错误：天机币数量必须大于0');
+  // 🟢 修复：根据 itemType 判断是否需要 coinsAmount
+  // 如果是订阅订单（itemType === 'subscription'），则不需要 coinsAmount
+  // 如果是充值订单（itemType === 'coin_pack' 或未指定），则需要 coinsAmount
+  const finalItemType = itemType || 'coin_pack';
+  const isSubscription = finalItemType === 'subscription';
+  
+  if (!isSubscription) {
+    // 充值订单必须提供 coinsAmount
+    if (!coinsAmount || coinsAmount <= 0) {
+      throw new Error('参数错误：天机币数量必须大于0');
+    }
   }
 
   // 检查用户是否存在
@@ -104,6 +117,40 @@ export async function createOrder(
 
   const isFirstPurchase = parseInt(firstPurchaseCheck.rows[0].count) === 0;
 
+  // 🔒 新人礼限购逻辑：如果购买的是新人礼套餐，必须验证用户是否首次购买
+  // 新人礼套餐类型标识
+  const newUserGiftPackTypes = [
+    'newcomer', // 新人礼主要标识
+    // 以下为兼容性标识（可根据需要保留或删除）
+    'new_user_gift',
+    'newuser_gift',
+    'first_purchase_gift',
+  ];
+
+  // 检查是否是新人礼套餐
+  if (packType && newUserGiftPackTypes.includes(packType)) {
+    // 如果用户不是首次购买，拒绝创建订单
+    if (!isFirstPurchase) {
+      throw new Error('新人礼仅限首次购买用户，您已购买过其他充值包，无法购买新人礼');
+    }
+
+    // 额外检查：用户是否已经购买过新人礼（防止重复购买）
+    const newUserGiftCheck = await pool.query(
+      `SELECT COUNT(*) as count 
+       FROM public.transactions 
+       WHERE user_id = $1 
+         AND type = 'purchase' 
+         AND pack_type = $2 
+         AND status IN ('pending', 'completed')`,
+      [userId, packType]
+    );
+
+    const hasPurchasedNewUserGift = parseInt(newUserGiftCheck.rows[0].count) > 0;
+    if (hasPurchasedNewUserGift) {
+      throw new Error('您已经购买过新人礼，每个用户限购一次');
+    }
+  }
+
   // 生成订单ID
   const orderId = randomUUID();
 
@@ -111,10 +158,16 @@ export async function createOrder(
   try {
     // 注意：item_type 字段有检查约束
     // 数据库约束定义：CHECK ((item_type = ANY (ARRAY['subscription'::text, 'coin_pack'::text, 'admin_adjustment'::text, 'refund'::text, 'system_grant'::text])))
-    // 对于充值订单，使用 'coin_pack'（最符合"充值"含义的合法值）
+    // 🟢 修复：根据订单类型设置 item_type 和 coins_amount
+    // 订阅订单：item_type = 'subscription', coins_amount = null
+    // 充值订单：item_type = 'coin_pack', coins_amount = coinsAmount
     
     // 准备插入值
-    const itemTypeValue = 'coin_pack'; // 强制使用 'coin_pack'
+    const itemTypeValue = finalItemType; // 使用传入的 itemType 或默认 'coin_pack'
+    const coinsAmountValue = isSubscription ? null : (coinsAmount || 0);
+    const orderDescription = isSubscription 
+      ? (description || `订阅会员服务`)
+      : (description || `购买 ${coinsAmount} 天机币`);
     
     // 调试日志：打印实际插入的值
     console.log('创建订单 - 准备插入的值:', {
@@ -122,10 +175,11 @@ export async function createOrder(
       userId,
       type: 'purchase',
       amount,
-      coinsAmount,
+      coinsAmount: coinsAmountValue,
       item_type: itemTypeValue,
       pack_type: packType || null,
       status: 'pending',
+      isSubscription,
     });
     
     await pool.query(
@@ -150,10 +204,10 @@ export async function createOrder(
         userId,
         'purchase',
         amount,
-        coinsAmount,
-        itemTypeValue, // 强制使用 'coin_pack'
+        coinsAmountValue, // 订阅订单为 null，充值订单为 coinsAmount
+        itemTypeValue, // 'subscription' 或 'coin_pack'
         packType || null,
-        description || `购买 ${coinsAmount} 天机币`,
+        orderDescription,
         null, // operator_id 为空（用户自己购买）
         'pending', // 初始状态为 pending
         paymentProvider || null,
@@ -161,9 +215,19 @@ export async function createOrder(
       ]
     );
 
+    // 生成支付链接
+    // 如果是对接真实支付（如支付宝、微信），这里会调用第三方 API 生成支付链接
+    // 目前使用模拟链接，指向前端收银台页面
+    const baseUrl = process.env.FRONTEND_URL || process.env.APP_URL || '';
+    const paymentUrl = baseUrl 
+      ? `${baseUrl}/payment/cashier?orderId=${orderId}`
+      : `/payment/cashier?orderId=${orderId}`;
+
     return {
       success: true,
       order_id: orderId,
+      amount: parseFloat(amount.toString()), // 确保转为数字
+      payment_url: paymentUrl,
       message: '订单创建成功',
     };
   } catch (error: any) {
@@ -306,6 +370,207 @@ export async function handlePaymentSuccess(
     throw new Error(`处理支付成功失败: ${error.message || '未知错误'}`);
   } finally {
     // 释放连接
+    client.release();
+  }
+}
+
+/**
+ * 模拟支付成功（开发环境专用）
+ * 将订单状态设置为 'paid' 并发放权益
+ * 
+ * @param orderId 订单ID
+ * @returns Promise<{ success: boolean; message: string; order_id?: string; new_balance?: number }> 处理结果
+ * 
+ * @throws Error 如果处理失败
+ */
+export async function mockPaySuccess(orderId: string): Promise<{ 
+  success: boolean; 
+  message: string; 
+  order_id?: string; 
+  new_balance?: number;
+}> {
+  if (!orderId) {
+    throw new Error('参数错误：订单ID必须有效');
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. 查询订单（使用 FOR UPDATE 锁定行，防止并发）
+    const orderRes = await client.query(
+      `SELECT * FROM public.transactions WHERE id = $1 FOR UPDATE`,
+      [orderId]
+    );
+
+    if (orderRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      throw new Error(`订单不存在: ${orderId}`);
+    }
+
+    const order = orderRes.rows[0];
+
+    // 2. 幂等性检查：如果已经支付过，直接返回成功
+    if (order.status === 'paid' || order.status === 'completed') {
+      await client.query('ROLLBACK');
+      
+      // 查询当前余额
+      const balanceResult = await client.query(
+        'SELECT tianji_coins_balance FROM public.profiles WHERE id = $1',
+        [order.user_id]
+      );
+      const newBalance = balanceResult.rows.length > 0 
+        ? balanceResult.rows[0].tianji_coins_balance 
+        : undefined;
+      
+      return { 
+        success: true, 
+        message: '订单已支付',
+        order_id: orderId,
+        new_balance: newBalance,
+      };
+    }
+
+    // 3. 更新订单状态为 'paid'
+    await client.query(
+      `UPDATE public.transactions 
+       SET status = 'paid', paid_at = NOW(), updated_at = NOW() 
+       WHERE id = $1`,
+      [orderId]
+    );
+
+    // 4. 发放权益（发放天机币）
+    if (order.coins_amount && order.coins_amount > 0) {
+      await client.query(
+        `UPDATE public.profiles 
+         SET tianji_coins_balance = tianji_coins_balance + $1,
+             updated_at = NOW()
+         WHERE id = $2`,
+        [order.coins_amount, order.user_id]
+      );
+    }
+
+    await client.query('COMMIT');
+    
+    // 5. 查询新的余额
+    const balanceResult = await client.query(
+      'SELECT tianji_coins_balance FROM public.profiles WHERE id = $1',
+      [order.user_id]
+    );
+    const newBalance = balanceResult.rows.length > 0 
+      ? balanceResult.rows[0].tianji_coins_balance 
+      : undefined;
+
+    return { 
+      success: true, 
+      message: 'Mock 支付成功',
+      order_id: orderId,
+      new_balance: newBalance,
+    };
+  } catch (error: any) {
+    await client.query('ROLLBACK');
+    console.error('Mock 支付失败:', {
+      orderId,
+      error: error.message,
+    });
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * 模拟支付失败（开发环境专用）
+ * 将订单状态设置为 'failed'，不发放权益
+ * 
+ * @param orderId 订单ID
+ * @returns Promise<{ success: boolean; message: string; order_id?: string }> 处理结果
+ * 
+ * @throws Error 如果处理失败
+ */
+export async function mockPayFail(orderId: string): Promise<{ 
+  success: boolean; 
+  message: string; 
+  order_id?: string;
+}> {
+  if (!orderId) {
+    throw new Error('参数错误：订单ID必须有效');
+  }
+
+  const client = await pool.connect();
+  try {
+    // 直接更新状态为 failed（不需要事务，因为不涉及发币）
+    const result = await client.query(
+      `UPDATE public.transactions 
+       SET status = 'failed', updated_at = NOW() 
+       WHERE id = $1 RETURNING id`,
+      [orderId]
+    );
+
+    if (result.rowCount === 0) {
+      throw new Error(`订单不存在: ${orderId}`);
+    }
+
+    return { 
+      success: true, 
+      message: 'Mock 支付失败已触发',
+      order_id: orderId,
+    };
+  } catch (error: any) {
+    console.error('Mock 支付失败处理错误:', {
+      orderId,
+      error: error.message,
+    });
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * 模拟支付取消（开发环境专用）
+ * 将订单状态设置为 'cancelled'，不发放权益
+ * 
+ * @param orderId 订单ID
+ * @returns Promise<{ success: boolean; message: string; order_id?: string }> 处理结果
+ * 
+ * @throws Error 如果处理失败
+ */
+export async function mockPayCancel(orderId: string): Promise<{ 
+  success: boolean; 
+  message: string; 
+  order_id?: string;
+}> {
+  if (!orderId) {
+    throw new Error('参数错误：订单ID必须有效');
+  }
+
+  const client = await pool.connect();
+  try {
+    // 直接更新状态为 cancelled（不需要事务，因为不涉及发币）
+    const result = await client.query(
+      `UPDATE public.transactions 
+       SET status = 'cancelled', updated_at = NOW() 
+       WHERE id = $1 RETURNING id`,
+      [orderId]
+    );
+
+    if (result.rowCount === 0) {
+      throw new Error(`订单不存在: ${orderId}`);
+    }
+
+    return { 
+      success: true, 
+      message: 'Mock 支付取消已触发',
+      order_id: orderId,
+    };
+  } catch (error: any) {
+    console.error('Mock 支付取消处理错误:', {
+      orderId,
+      error: error.message,
+    });
+    throw error;
+  } finally {
     client.release();
   }
 }

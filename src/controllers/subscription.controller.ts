@@ -1,6 +1,14 @@
 import { Response } from 'express';
 import * as subscriptionService from '../services/subscription.service';
 import { AuthRequest } from '../middleware/auth.middleware';
+import {
+  sendSuccess,
+  sendError,
+  sendUnauthorized,
+  sendBadRequest,
+  sendNotFound,
+  sendInternalError,
+} from '../utils/response';
 
 /**
  * 订阅/会员系统控制器模块
@@ -18,10 +26,7 @@ export async function getSubscriptionStatus(
   try {
     // 检查认证
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: '未认证',
-      });
+      sendUnauthorized(res);
       return;
     }
 
@@ -31,27 +36,16 @@ export async function getSubscriptionStatus(
     const status = await subscriptionService.getSubscriptionStatus(userId);
 
     // 返回成功结果
-    res.status(200).json({
-      success: true,
-      data: status,
-    });
+    sendSuccess(res, status);
   } catch (error: any) {
     console.error('获取订阅状态失败:', error);
 
     if (error.message?.includes('用户不存在')) {
-      res.status(404).json({
-        success: false,
-        error: '用户不存在',
-        message: error.message,
-      });
+      sendNotFound(res, error.message);
       return;
     }
 
-    res.status(500).json({
-      success: false,
-      error: '获取订阅状态失败',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, undefined, error);
   }
 }
 
@@ -66,10 +60,7 @@ export async function createSubscription(
   try {
     // 检查认证
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: '未认证',
-      });
+      sendUnauthorized(res);
       return;
     }
 
@@ -78,20 +69,12 @@ export async function createSubscription(
 
     // 参数验证
     if (!tier || !['basic', 'premium', 'vip'].includes(tier)) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: '会员等级必须为 basic、premium 或 vip',
-      });
+      sendBadRequest(res, '会员等级必须为 basic、premium 或 vip');
       return;
     }
 
     if (typeof isYearly !== 'boolean') {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: 'isYearly 必须为布尔值',
-      });
+      sendBadRequest(res, 'isYearly 必须为布尔值');
       return;
     }
 
@@ -103,37 +86,21 @@ export async function createSubscription(
       paymentMethod
     );
 
-    // 返回成功结果
-    res.status(200).json({
-      success: true,
-      data: result,
+    // 返回成功结果 - 确保数据结构统一
+    sendSuccess(res, {
+      ...result,
+      orderId: result.orderId || (result as any).order_id, // 兼容不同格式
+      order_id: (result as any).order_id || result.orderId, // 兼容旧代码
     });
   } catch (error: any) {
     console.error('创建订阅失败:', error);
 
-    if (error.message?.includes('参数错误')) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: error.message,
-      });
+    if (error.message?.includes('参数错误') || error.message?.includes('不能订阅免费等级')) {
+      sendBadRequest(res, error.message);
       return;
     }
 
-    if (error.message?.includes('不能订阅免费等级')) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: error.message,
-      });
-      return;
-    }
-
-    res.status(500).json({
-      success: false,
-      error: '创建订阅失败',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, undefined, error);
   }
 }
 
@@ -148,10 +115,7 @@ export async function checkSubscriptionStatus(
   try {
     // 检查认证
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: '未认证',
-      });
+      sendUnauthorized(res);
       return;
     }
 
@@ -159,11 +123,7 @@ export async function checkSubscriptionStatus(
 
     // 参数验证
     if (!orderId || typeof orderId !== 'string') {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: '订单ID必须提供',
-      });
+      sendBadRequest(res, '订单ID必须提供');
       return;
     }
 
@@ -171,33 +131,36 @@ export async function checkSubscriptionStatus(
     const result = await subscriptionService.checkSubscriptionStatus(orderId);
 
     // 返回成功结果
-    res.status(200).json({
-      success: true,
-      data: result,
-    });
+    sendSuccess(res, result);
   } catch (error: any) {
     console.error('检查订阅状态失败:', error);
 
     if (error.message?.includes('订单不存在')) {
-      res.status(404).json({
-        success: false,
-        error: '订单不存在',
-        message: error.message,
-      });
+      sendNotFound(res, error.message);
       return;
     }
 
-    res.status(500).json({
-      success: false,
-      error: '检查订阅状态失败',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, undefined, error);
   }
 }
 
 /**
  * 取消订阅控制器
  * POST /api/subscription/cancel
+ * 
+ * 请求格式：
+ * - 请求头：Authorization: Bearer <token>
+ * - 请求体：无（从 token 中获取用户 ID）
+ * 
+ * 响应格式：
+ * {
+ *   success: true,
+ *   data: {
+ *     subscription: { ... },
+ *     expiresAt: "2026-02-01T00:00:00Z",
+ *     message: "已取消订阅，将在 2026年2月1日 到期后停止续费"
+ *   }
+ * }
  */
 export async function cancelSubscription(
   req: AuthRequest,
@@ -206,40 +169,36 @@ export async function cancelSubscription(
   try {
     // 检查认证
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: '未认证',
-      });
+      sendUnauthorized(res);
       return;
     }
 
     const userId = req.user.userId;
 
     // 取消订阅
-    await subscriptionService.cancelSubscription(userId);
+    const result = await subscriptionService.cancelSubscription(userId);
 
-    // 返回成功结果
-    res.status(200).json({
-      success: true,
-      message: '订阅已取消',
-    });
+    // 返回成功结果，包含订阅信息和提示消息
+    sendSuccess(res, {
+      subscription: result.subscription,
+      expiresAt: result.expiresAt,
+      message: result.message,
+    }, result.message);
   } catch (error: any) {
     console.error('取消订阅失败:', error);
 
-    if (error.message?.includes('没有找到活跃的订阅')) {
-      res.status(404).json({
-        success: false,
-        error: '没有找到活跃的订阅',
-        message: error.message,
-      });
+    // 根据错误类型返回不同的状态码
+    if (error.message?.includes('您当前没有活跃的订阅')) {
+      sendNotFound(res, error.message);
       return;
     }
 
-    res.status(500).json({
-      success: false,
-      error: '取消订阅失败',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    if (error.message?.includes('参数错误')) {
+      sendBadRequest(res, error.message);
+      return;
+    }
+
+    sendInternalError(res, undefined, error);
   }
 }
 
@@ -254,10 +213,7 @@ export async function checkFeaturePermission(
   try {
     // 检查认证
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: '未认证',
-      });
+      sendUnauthorized(res);
       return;
     }
 
@@ -266,11 +222,7 @@ export async function checkFeaturePermission(
 
     // 参数验证
     if (!featurePath || typeof featurePath !== 'string') {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: '功能路径必须提供',
-      });
+      sendBadRequest(res, '功能路径必须提供');
       return;
     }
 
@@ -281,27 +233,16 @@ export async function checkFeaturePermission(
     );
 
     // 返回成功结果
-    res.status(200).json({
-      success: true,
-      data: result,
-    });
+    sendSuccess(res, result);
   } catch (error: any) {
     console.error('检查功能权限失败:', error);
 
     if (error.message?.includes('参数错误')) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: error.message,
-      });
+      sendBadRequest(res, error.message);
       return;
     }
 
-    res.status(500).json({
-      success: false,
-      error: '检查功能权限失败',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, undefined, error);
   }
 }
 
@@ -316,10 +257,7 @@ export async function getTodayUsage(
   try {
     // 检查认证
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: '未认证',
-      });
+      sendUnauthorized(res);
       return;
     }
 
@@ -328,11 +266,7 @@ export async function getTodayUsage(
 
     // 参数验证
     if (!feature) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: '功能名称必须提供',
-      });
+      sendBadRequest(res, '功能名称必须提供');
       return;
     }
 
@@ -340,27 +274,16 @@ export async function getTodayUsage(
     const usage = await subscriptionService.getTodayUsage(userId, feature);
 
     // 返回成功结果
-    res.status(200).json({
-      success: true,
-      data: usage,
-    });
+    sendSuccess(res, usage);
   } catch (error: any) {
     console.error('获取今日使用次数失败:', error);
 
     if (error.message?.includes('参数错误')) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: error.message,
-      });
+      sendBadRequest(res, error.message);
       return;
     }
 
-    res.status(500).json({
-      success: false,
-      error: '获取今日使用次数失败',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, undefined, error);
   }
 }
 
@@ -375,10 +298,7 @@ export async function recordUsage(
   try {
     // 检查认证
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: '未认证',
-      });
+      sendUnauthorized(res);
       return;
     }
 
@@ -387,11 +307,7 @@ export async function recordUsage(
 
     // 参数验证
     if (!feature) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: '功能名称必须提供',
-      });
+      sendBadRequest(res, '功能名称必须提供');
       return;
     }
 
@@ -399,36 +315,21 @@ export async function recordUsage(
     await subscriptionService.recordUsage(userId, feature, metadata);
 
     // 返回成功结果
-    res.status(200).json({
-      success: true,
-      message: '使用记录已保存',
-    });
+    sendSuccess(res, null, '使用记录已保存');
   } catch (error: any) {
     console.error('记录功能使用失败:', error);
 
     if (error.message?.includes('今日使用次数已达上限')) {
-      res.status(403).json({
-        success: false,
-        error: '使用次数已达上限',
-        message: error.message,
-      });
+      sendError(res, '使用次数已达上限', error.message, 403);
       return;
     }
 
     if (error.message?.includes('参数错误')) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: error.message,
-      });
+      sendBadRequest(res, error.message);
       return;
     }
 
-    res.status(500).json({
-      success: false,
-      error: '记录功能使用失败',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, undefined, error);
   }
 }
 
@@ -443,10 +344,7 @@ export async function checkExpiredSubscription(
   try {
     // 检查认证
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: '未认证',
-      });
+      sendUnauthorized(res);
       return;
     }
 
@@ -456,26 +354,15 @@ export async function checkExpiredSubscription(
     const result = await subscriptionService.checkExpiredSubscription(userId);
 
     // 返回成功结果
-    res.status(200).json({
-      success: true,
-      data: result,
-    });
+    sendSuccess(res, result);
   } catch (error: any) {
     console.error('检查过期订阅失败:', error);
 
     if (error.message?.includes('参数错误')) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: error.message,
-      });
+      sendBadRequest(res, error.message);
       return;
     }
 
-    res.status(500).json({
-      success: false,
-      error: '检查过期订阅失败',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, undefined, error);
   }
 }

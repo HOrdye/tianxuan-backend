@@ -1,6 +1,13 @@
 import { Response } from 'express';
 import * as userService from '../services/user.service';
 import { AuthRequest } from '../middleware/auth.middleware';
+import {
+  sendSuccess,
+  sendUnauthorized,
+  sendBadRequest,
+  sendNotFound,
+  sendInternalError,
+} from '../utils/response';
 
 /**
  * 用户资料控制器模块
@@ -17,10 +24,7 @@ export async function getProfile(
 ): Promise<void> {
   try {
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: '未认证',
-      });
+      sendUnauthorized(res);
       return;
     }
 
@@ -30,26 +34,15 @@ export async function getProfile(
     const profile = await userService.getProfile(userId);
 
     if (!profile) {
-      res.status(404).json({
-        success: false,
-        error: '用户资料不存在',
-      });
+      sendNotFound(res, '用户资料不存在');
       return;
     }
 
     // 返回用户资料
-    res.status(200).json({
-      success: true,
-      data: profile,
-    });
+    sendSuccess(res, profile);
   } catch (error: any) {
     console.error('获取用户资料失败:', error);
-
-    res.status(500).json({
-      success: false,
-      error: '获取用户资料失败',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, undefined, error);
   }
 }
 
@@ -63,10 +56,7 @@ export async function updateProfile(
 ): Promise<void> {
   try {
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: '未认证',
-      });
+      sendUnauthorized(res);
       return;
     }
 
@@ -75,10 +65,7 @@ export async function updateProfile(
 
     // 验证输入
     if (!updateData || Object.keys(updateData).length === 0) {
-      res.status(400).json({
-        success: false,
-        error: '请提供要更新的数据',
-      });
+      sendBadRequest(res, '请提供要更新的数据');
       return;
     }
 
@@ -86,27 +73,16 @@ export async function updateProfile(
     const updatedProfile = await userService.updateProfile(userId, updateData);
 
     // 返回更新后的资料
-    res.status(200).json({
-      success: true,
-      message: '资料更新成功',
-      data: updatedProfile,
-    });
+    sendSuccess(res, updatedProfile, '资料更新成功');
   } catch (error: any) {
     console.error('更新用户资料失败:', error);
 
     if (error.message === '用户不存在') {
-      res.status(404).json({
-        success: false,
-        error: error.message,
-      });
+      sendNotFound(res, error.message);
       return;
     }
 
-    res.status(500).json({
-      success: false,
-      error: '更新用户资料失败',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, undefined, error);
   }
 }
 
@@ -120,10 +96,7 @@ export async function getUserTier(
 ): Promise<void> {
   try {
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: '未认证',
-      });
+      sendUnauthorized(res);
       return;
     }
 
@@ -133,27 +106,16 @@ export async function getUserTier(
     const tier = await userService.getUserTier(userId);
 
     if (tier === null) {
-      res.status(404).json({
-        success: false,
-        error: '用户不存在',
-      });
+      sendNotFound(res, '用户不存在');
       return;
     }
 
     // 返回用户等级
-    res.status(200).json({
-      success: true,
-      data: {
-        tier: tier || 'free', // 默认为 free
-      },
+    sendSuccess(res, {
+      tier: tier || 'free', // 默认为 free
     });
   } catch (error: any) {
     console.error('获取用户等级失败:', error);
-
-    res.status(500).json({
-      success: false,
-      error: '获取用户等级失败',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, undefined, error);
   }
 }

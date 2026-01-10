@@ -21,8 +21,8 @@ const app = express();
 // 基础中间件
 app.use(helmet());
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // 🔍 请求日志中间件（用于调试）
 app.use((req, res, next) => {

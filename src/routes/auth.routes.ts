@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { register, login, getCurrentUser } from '../controllers/auth.controller';
+import { register, login, getCurrentUser, resetPassword } from '../controllers/auth.controller';
 import { authenticateToken } from '../middleware/auth.middleware';
 
 /**
@@ -73,5 +73,22 @@ router.post('/login', login);
  * }
  */
 router.get('/me', authenticateToken, getCurrentUser);
+
+/**
+ * POST /api/auth/reset-password
+ * 请求密码重置（发送重置邮件）
+ * 
+ * 请求体：
+ * {
+ *   "email": "user@example.com"
+ * }
+ * 
+ * 响应：
+ * {
+ *   "success": true,
+ *   "message": "如果该邮箱已注册，密码重置链接已发送到您的邮箱"
+ * }
+ */
+router.post('/reset-password', resetPassword);
 
 export default router;

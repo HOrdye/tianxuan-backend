@@ -330,27 +330,53 @@ export async function createSubscription(
       // 这里先创建订阅记录，支付订单由前端或支付服务创建
       const orderId = randomUUID();
 
-      // 3. 创建订阅记录
+      // =========================================================
+      // 3. 🟢 关键修复：先结束旧的活跃订阅
+      // 这一步是为了避开 "unique_active_subscription" 约束
+      // 如果用户已经有活跃订阅，需要先标记为 cancelled（被升级替代）
+      // ⚠️ 注意：如果数据库表中没有 cancelled_at 字段，只更新 status
+      // =========================================================
+      await client.query(
+        `UPDATE public.subscriptions 
+         SET status = 'cancelled',
+             updated_at = NOW()
+         WHERE user_id = $1 
+           AND status = 'active'`,
+        [userId]
+      );
+
+      // 4. 创建新订阅记录
       const subscriptionId = randomUUID();
       const startedAt = new Date();
       const expiresAt = new Date();
-      expiresAt.setMonth(expiresAt.getMonth() + durationMonths);
+      if (isYearly) {
+        expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+      } else {
+        expiresAt.setMonth(expiresAt.getMonth() + 1);
+      }
 
       // ✅ 数据库表结构已修复：start_date → started_at, end_date → expires_at
-      // ✅ 数据库约束已修复：允许 'pending' 状态和 'basic', 'premium', 'vip' 等级
-      // 创建订单时使用 'pending' 状态，支付成功后再更新为 'active'
+      // ⚠️ 确保 status 是 'active'，这样前端才能立即看到会员等级变化
       await client.query(
         `INSERT INTO public.subscriptions 
          (id, user_id, tier, status, started_at, expires_at, auto_renew, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())`,
-        [subscriptionId, userId, tier, 'pending', startedAt, expiresAt, true]
+        [subscriptionId, userId, tier, 'active', startedAt, expiresAt, true]
       );
 
-      // 4. 更新 profiles.tier（可选，也可以等支付成功后再更新）
-      // await client.query(
-      //   `UPDATE public.profiles SET tier = $1 WHERE id = $2`,
-      //   [tier, userId]
-      // );
+      // 5. 🟢 关键修复：同步更新 profiles 表
+      // 如果这步不做，前端获取用户信息时看到的还是旧等级！
+      // 前端 userStore.tier 主要是从 profiles 表读取的
+      await client.query(
+        `UPDATE public.profiles
+         SET 
+           tier = $1,
+           subscription_status = 'active',
+           subscription_end_at = $2,
+           updated_at = NOW()
+         WHERE id = $3`,
+        [tier, expiresAt, userId]
+      );
 
       await client.query('COMMIT');
 
@@ -361,7 +387,9 @@ export async function createSubscription(
       };
     } catch (error: any) {
       await client.query('ROLLBACK');
-      throw error;
+      console.error('创建订阅失败:', error);
+      // 抛出错误以便 Controller 捕获
+      throw new Error(`创建订阅失败: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       client.release();
     }
@@ -372,7 +400,7 @@ export async function createSubscription(
       isYearly,
       error: error.message,
     });
-    throw new Error(`创建订阅失败: ${error.message || '未知错误'}`);
+    throw error; // 直接抛出，让上层处理
   }
 }
 
@@ -443,75 +471,169 @@ export async function checkSubscriptionStatus(
 /**
  * 取消订阅
  * 不立即生效，到期后不再续费
+ * 仅设置 auto_renew = false，保持 status = 'active' 直到计费周期结束
  * 
  * @param userId 用户ID
- * @returns Promise<{ success: boolean }> 取消结果
+ * @returns Promise<取消订阅结果> 包含订阅信息和到期提示
  */
+export interface CancelSubscriptionResult {
+  success: boolean;
+  subscription: {
+    id: string;
+    user_id: string;
+    tier: Tier;
+    status: SubscriptionStatus;
+    auto_renew: boolean;
+    expires_at: Date | null;
+    started_at: Date;
+    created_at: Date;
+    updated_at: Date;
+  };
+  expiresAt: Date | null;
+  message: string;
+}
+
 export async function cancelSubscription(
   userId: string
-): Promise<{ success: boolean }> {
+): Promise<CancelSubscriptionResult> {
   if (!userId) {
     throw new Error('参数错误：用户ID必须有效');
   }
 
+  const client = await pool.connect();
+  
   try {
-    // 查找当前活跃或待支付的订阅（允许取消 pending 和 active 状态的订阅）
-    // 🔍 调试日志：查看查询结果
-    const subscriptionResult = await pool.query(
-      `SELECT id, status, tier, created_at
+    await client.query('BEGIN');
+
+    // 1. 查询当前活跃订阅（只查询 active 状态，不包括 pending）
+    const subscriptionResult = await client.query(
+      `SELECT 
+         id, 
+         user_id, 
+         tier, 
+         status, 
+         auto_renew,
+         expires_at,
+         started_at,
+         created_at,
+         updated_at
        FROM public.subscriptions 
        WHERE user_id = $1 
-         AND status IN ('active', 'pending')
+         AND status = 'active'
        ORDER BY created_at DESC 
        LIMIT 1`,
       [userId]
     );
 
-    // 调试日志：打印查询结果
-    console.log('取消订阅 - 查询结果:', {
-      userId,
-      found: subscriptionResult.rows.length,
-      subscriptions: subscriptionResult.rows,
-    });
-
+    // 2. 检查是否找到订阅
     if (subscriptionResult.rows.length === 0) {
-      // 调试日志：如果没找到，查询所有订阅状态
-      const allSubscriptions = await pool.query(
-        `SELECT id, status, tier, created_at 
-         FROM public.subscriptions 
-         WHERE user_id = $1 
-         ORDER BY created_at DESC`,
-        [userId]
-      );
-      console.log('取消订阅 - 所有订阅记录:', {
-        userId,
-        count: allSubscriptions.rows.length,
-        subscriptions: allSubscriptions.rows,
-      });
-      throw new Error('没有找到活跃的订阅');
+      await client.query('ROLLBACK');
+      throw new Error('您当前没有活跃的订阅');
     }
 
     const subscription = subscriptionResult.rows[0];
 
-    // 更新订阅状态为已取消（但不立即降级）
-    // ⚠️ 注意：如果数据库表中没有 cancelled_at 字段，需要先添加该字段
-    // 或者移除 cancelled_at 字段的更新
-    await pool.query(
+    // 3. 检查是否已经取消过（auto_renew = false）
+    if (subscription.auto_renew === false) {
+      await client.query('ROLLBACK');
+      
+      // 已取消，返回提示信息
+      const expiresAt: Date | null = subscription.expires_at 
+        ? new Date(subscription.expires_at) 
+        : null;
+      const expiresAtStr = expiresAt 
+        ? expiresAt.toLocaleDateString('zh-CN', { 
+            year: 'numeric', 
+            month: 'long', 
+            day: 'numeric' 
+          })
+        : '未知';
+      
+      return {
+        success: true,
+        subscription: {
+          id: subscription.id,
+          user_id: subscription.user_id,
+          tier: subscription.tier as Tier,
+          status: subscription.status as SubscriptionStatus,
+          auto_renew: false,
+          expires_at: expiresAt,
+          started_at: subscription.started_at,
+          created_at: subscription.created_at,
+          updated_at: subscription.updated_at,
+        },
+        expiresAt: expiresAt,
+        message: `您的订阅已取消，将在 ${expiresAtStr} 到期后停止续费`,
+      };
+    }
+
+    // 4. 更新订阅：仅设置 auto_renew = false，不修改 status
+    await client.query(
       `UPDATE public.subscriptions 
-       SET status = 'cancelled', 
-           auto_renew = false,
+       SET auto_renew = false,
            updated_at = NOW()
        WHERE id = $1`,
       [subscription.id]
     );
 
-    return { success: true };
+    // 5. 重新查询更新后的订阅信息
+    const updatedResult = await client.query(
+      `SELECT 
+         id, 
+         user_id, 
+         tier, 
+         status, 
+         auto_renew,
+         expires_at,
+         started_at,
+         created_at,
+         updated_at
+       FROM public.subscriptions 
+       WHERE id = $1`,
+      [subscription.id]
+    );
+
+    const updatedSubscription = updatedResult.rows[0];
+    const expiresAt: Date | null = updatedSubscription.expires_at 
+      ? new Date(updatedSubscription.expires_at) 
+      : null;
+    
+    // 6. 格式化到期时间提示
+    const expiresAtStr = expiresAt 
+      ? expiresAt.toLocaleDateString('zh-CN', { 
+          year: 'numeric', 
+          month: 'long', 
+          day: 'numeric' 
+        })
+      : '未知';
+
+    await client.query('COMMIT');
+
+    return {
+      success: true,
+      subscription: {
+        id: updatedSubscription.id,
+        user_id: updatedSubscription.user_id,
+        tier: updatedSubscription.tier as Tier,
+        status: updatedSubscription.status as SubscriptionStatus,
+        auto_renew: false,
+        expires_at: expiresAt,
+        started_at: updatedSubscription.started_at,
+        created_at: updatedSubscription.created_at,
+        updated_at: updatedSubscription.updated_at,
+      },
+      expiresAt: expiresAt,
+      message: `已取消订阅，将在 ${expiresAtStr} 到期后停止续费`,
+    };
   } catch (error: any) {
+    await client.query('ROLLBACK');
     console.error('取消订阅失败:', {
       userId,
       error: error.message,
     });
-    throw new Error(`取消订阅失败: ${error.message || '未知错误'}`);
+    throw error; // 直接抛出，让 Controller 处理
+  } finally {
+    client.release();
   }
 }
 
