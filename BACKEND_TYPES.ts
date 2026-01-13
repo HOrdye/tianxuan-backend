@@ -164,6 +164,22 @@ export interface TimespaceCache {
   updated_at: Date;
 }
 
+export interface AnalysisSession {
+  id: string;
+  userId: string;
+  profileId: string;
+  sessionData: any; // JSONB 类型，存储分析会话数据
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface SaveAnalysisSessionResult {
+  success: boolean;
+  message?: string;
+  error?: string;
+  sessionId?: string;
+}
+
 // ============================================================================
 // 5. 标准 API 响应类型
 // 文件位置：src/types/response.ts

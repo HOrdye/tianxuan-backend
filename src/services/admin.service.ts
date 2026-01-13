@@ -187,97 +187,111 @@ export interface RevenueStats {
 export async function getUserList(
   params: UserListParams = {}
 ): Promise<PaginatedResult<UserListItem>> {
-  const {
-    page = 1,
-    pageSize = 20,
-    search,
-    role,
-    tier,
-    sortBy = 'created_at',
-    sortOrder = 'desc',
-  } = params;
+  try {
+    console.log('🔍 [getUserList Service] 开始处理，参数:', params);
+    
+    const {
+      page = 1,
+      pageSize = 20,
+      search,
+      role,
+      tier,
+      sortBy = 'created_at',
+      sortOrder = 'desc',
+    } = params;
 
-  // 构建WHERE条件
-  const conditions: string[] = [];
-  const values: any[] = [];
-  let paramIndex = 1;
+    // 构建WHERE条件
+    const conditions: string[] = [];
+    const values: any[] = [];
+    let paramIndex = 1;
 
-  // 搜索条件（邮箱或用户名）
-  if (search) {
-    conditions.push(
-      `(p.email ILIKE $${paramIndex} OR p.username ILIKE $${paramIndex})`
-    );
-    values.push(`%${search}%`);
-    paramIndex++;
+    // 搜索条件（邮箱或用户名）
+    if (search) {
+      conditions.push(
+        `(p.email ILIKE $${paramIndex} OR p.username ILIKE $${paramIndex})`
+      );
+      values.push(`%${search}%`);
+      paramIndex++;
+    }
+
+    // 角色筛选
+    if (role) {
+      conditions.push(`p.role = $${paramIndex}`);
+      values.push(role);
+      paramIndex++;
+    }
+
+    // 等级筛选
+    if (tier) {
+      conditions.push(`p.tier = $${paramIndex}`);
+      values.push(tier);
+      paramIndex++;
+    }
+
+    const whereClause =
+      conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    // 排序字段验证（防止SQL注入）
+    const allowedSortFields = [
+      'created_at',
+      'email',
+      'username',
+      'tier',
+      'tianji_coins_balance',
+    ];
+    const safeSortBy = allowedSortFields.includes(sortBy) ? sortBy : 'created_at';
+    const safeSortOrder = sortOrder.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+
+    // 计算偏移量
+    const offset = (page - 1) * pageSize;
+
+    // 查询总数
+    const countQuery = `
+      SELECT COUNT(*) as total
+      FROM public.profiles p
+      ${whereClause}
+    `;
+    const countResult = await pool.query(countQuery, values);
+    const total = parseInt(countResult.rows[0].total, 10);
+
+    // 查询数据（需要为 LIMIT 和 OFFSET 添加参数）
+    const dataQuery = `
+      SELECT 
+        p.id,
+        p.email,
+        p.username,
+        p.role,
+        p.tier,
+        p.tianji_coins_balance,
+        p.created_at,
+        p.last_check_in_date,
+        p.consecutive_check_in_days
+      FROM public.profiles p
+      ${whereClause}
+      ORDER BY p.${safeSortBy} ${safeSortOrder}
+      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+    `;
+    // 为 LIMIT 和 OFFSET 添加参数值
+    console.log('🔍 [getUserList Service] 执行数据查询，paramIndex:', paramIndex, 'values长度:', values.length);
+    const dataValues = [...values, pageSize, offset];
+    console.log('🔍 [getUserList Service] SQL查询:', dataQuery);
+    console.log('🔍 [getUserList Service] 查询参数:', dataValues);
+    
+    const dataResult = await pool.query(dataQuery, dataValues);
+    console.log('✅ [getUserList Service] 查询成功，返回', dataResult.rows.length, '条数据');
+
+    return {
+      data: dataResult.rows as UserListItem[],
+      total,
+      page,
+      pageSize,
+      totalPages: Math.ceil(total / pageSize),
+    };
+  } catch (error: any) {
+    console.error('❌ [getUserList Service] 查询失败:', error);
+    console.error('❌ [getUserList Service] 错误堆栈:', error.stack);
+    throw error;
   }
-
-  // 角色筛选
-  if (role) {
-    conditions.push(`p.role = $${paramIndex}`);
-    values.push(role);
-    paramIndex++;
-  }
-
-  // 等级筛选
-  if (tier) {
-    conditions.push(`p.tier = $${paramIndex}`);
-    values.push(tier);
-    paramIndex++;
-  }
-
-  const whereClause =
-    conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-
-  // 排序字段验证（防止SQL注入）
-  const allowedSortFields = [
-    'created_at',
-    'email',
-    'username',
-    'tier',
-    'tianji_coins_balance',
-  ];
-  const safeSortBy = allowedSortFields.includes(sortBy) ? sortBy : 'created_at';
-  const safeSortOrder = sortOrder.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
-
-  // 计算偏移量
-  const offset = (page - 1) * pageSize;
-
-  // 查询总数
-  const countQuery = `
-    SELECT COUNT(*) as total
-    FROM public.profiles p
-    ${whereClause}
-  `;
-  const countResult = await pool.query(countQuery, values);
-  const total = parseInt(countResult.rows[0].total, 10);
-
-  // 查询数据
-  const dataQuery = `
-    SELECT 
-      p.id,
-      p.email,
-      p.username,
-      p.role,
-      p.tier,
-      p.tianji_coins_balance,
-      p.created_at,
-      p.last_check_in_date,
-      p.consecutive_check_in_days
-    FROM public.profiles p
-    ${whereClause}
-    ORDER BY p.${safeSortBy} ${safeSortOrder}
-    LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
-  `;
-  values.push(pageSize, offset);
-  const dataResult = await pool.query(dataQuery, values);
-
-  return {
-    data: dataResult.rows as UserListItem[],
-    total,
-    page,
-    pageSize,
-    totalPages: Math.ceil(total / pageSize),
-  };
 }
 
 /**
@@ -349,7 +363,7 @@ export async function getUserDetail(
  * 
  * @param operatorId 操作人ID（管理员）
  * @param userId 目标用户ID
- * @param tier 新等级（'explorer' | 'basic' | 'premium' | 'vip'）
+ * @param tier 新等级（'guest' | 'explorer' | 'basic' | 'premium' | 'vip'）
  * @returns Promise<void>
  * 
  * @throws Error 如果修改失败
@@ -365,8 +379,11 @@ export async function updateUserTier(
   }
 
   // 验证等级值
-  const validTiers = ['explorer', 'basic', 'premium', 'vip'];
-  if (!validTiers.includes(tier)) {
+  // 等级体系：guest(游客) -> explorer(探索者) -> basic(开悟者) -> premium(天命师) -> vip(玄机大师)
+  const validTiers = ['guest', 'explorer', 'basic', 'premium', 'vip'];
+  const tierLower = tier.toLowerCase();
+  
+  if (!validTiers.includes(tierLower)) {
     throw new Error(`参数错误：等级必须是以下之一：${validTiers.join(', ')}`);
   }
 
@@ -385,8 +402,84 @@ export async function updateUserTier(
     `UPDATE public.profiles 
      SET tier = $1, updated_at = NOW()
      WHERE id = $2`,
-    [tier, userId]
+    [tierLower, userId]
   );
+}
+
+/**
+ * 更新用户角色
+ * 
+ * @param operatorId 操作人ID（管理员）
+ * @param userId 目标用户ID
+ * @param role 新角色（'admin' | 'user'）
+ * @returns Promise<void>
+ * 
+ * @throws Error 如果修改失败
+ */
+export async function updateUserRole(
+  operatorId: string,
+  userId: string,
+  role: string
+): Promise<void> {
+  console.log('🔍 [updateUserRole Service] 开始处理，参数:', {
+    operatorId,
+    userId,
+    role,
+  });
+
+  // 参数验证
+  if (!userId || !role) {
+    throw new Error('参数错误：用户ID和角色必须有效');
+  }
+
+  // 验证角色值
+  const validRoles = ['admin', 'user'];
+  if (!validRoles.includes(role)) {
+    throw new Error(`参数错误：角色必须是以下之一：${validRoles.join(', ')}`);
+  }
+
+  // 检查用户是否存在，并获取当前角色
+  const userCheck = await pool.query(
+    'SELECT id, email, username, role FROM public.profiles WHERE id = $1',
+    [userId]
+  );
+
+  if (userCheck.rows.length === 0) {
+    throw new Error('用户不存在');
+  }
+
+  const oldRole = userCheck.rows[0].role;
+  console.log('🔍 [updateUserRole Service] 用户当前角色:', oldRole, '-> 新角色:', role);
+
+  // 更新用户角色
+  const updateResult = await pool.query(
+    `UPDATE public.profiles 
+     SET role = $1, updated_at = NOW()
+     WHERE id = $2
+     RETURNING id, email, role`,
+    [role, userId]
+  );
+
+  if (updateResult.rows.length === 0) {
+    throw new Error('更新用户角色失败：未找到要更新的用户');
+  }
+
+  const updatedUser = updateResult.rows[0];
+  console.log('✅ [updateUserRole Service] 用户角色更新成功:', {
+    userId: updatedUser.id,
+    email: updatedUser.email,
+    oldRole,
+    newRole: updatedUser.role,
+  });
+
+  // 验证更新是否成功
+  if (updatedUser.role !== role) {
+    console.error('❌ [updateUserRole Service] 警告：角色更新后不匹配！', {
+      expected: role,
+      actual: updatedUser.role,
+    });
+    throw new Error('更新用户角色失败：角色更新后不匹配');
+  }
 }
 
 /**

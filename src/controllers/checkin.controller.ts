@@ -1,6 +1,7 @@
 import { Response } from 'express';
 import * as checkinService from '../services/checkin.service';
 import { AuthRequest } from '../middleware/auth.middleware';
+import { sendSuccess, sendError, sendUnauthorized, sendBadRequest, sendNotFound, sendInternalError } from '../utils/response';
 
 /**
  * 签到控制器模块
@@ -30,16 +31,33 @@ export async function dailyCheckIn(
     // 执行签到
     const result = await checkinService.dailyCheckIn(userId);
 
-    // 返回成功结果
-    res.status(200).json({
-      success: true,
-      message: result.message || '签到成功',
-      data: {
-        coins_earned: result.coins_earned,
-        consecutive_days: result.consecutive_days,
-        check_in_date: result.check_in_date,
-      },
-    });
+    // 检查是否是 /daily 路由（通过路径判断）
+    const isDailyRoute = req.path === '/daily' || req.path.endsWith('/daily');
+    
+    if (isDailyRoute) {
+      // 前端期望的格式
+      sendSuccess(
+        res,
+        {
+          success: true,
+          coinsEarned: result.coins_earned,
+          consecutiveDays: result.consecutive_days,
+          message: result.message || `签到成功！获得 ${result.coins_earned} 天机币，连续签到 ${result.consecutive_days} 天`,
+        },
+        result.message || '签到成功'
+      );
+    } else {
+      // 原有格式（兼容）
+      sendSuccess(
+        res,
+        {
+          coins_earned: result.coins_earned,
+          consecutive_days: result.consecutive_days,
+          check_in_date: result.check_in_date,
+        },
+        result.message || '签到成功'
+      );
+    }
   } catch (error: any) {
     console.error('签到失败:', error);
 
@@ -91,7 +109,7 @@ export async function getCheckInStatus(
 
     const userId = req.user.userId;
 
-    // 查询签到状态
+    // 查询签到状态（✅ 已修复：直接查询 check_in_logs 表）
     const status = await checkinService.getCheckInStatus(userId);
 
     if (status === null) {
@@ -102,11 +120,37 @@ export async function getCheckInStatus(
       return;
     }
 
-    // 返回签到状态
-    res.status(200).json({
-      success: true,
-      data: status,
-    });
+    // ✅ 使用服务层返回的 can_check_in_today（已基于 check_in_logs 表计算）
+    const canCheckIn = status.can_check_in_today;
+    
+    // 计算今日奖励（根据用户等级和连续天数）
+    const tier = (status.tier || 'free').toLowerCase();
+    const tierRewards: Record<string, number> = {
+      'free': 10,
+      'guest': 10,
+      'explorer': 10,
+      'basic': 15,
+      'premium': 20,
+      'vip': 30,
+      'destiny_master': 20,
+      'celestial_master': 30,
+    };
+    const baseReward = tierRewards[tier] || 10;
+    const consecutiveDays = status.consecutive_check_in_days || 0;
+    const bonusReward = Math.floor(consecutiveDays / 7) * 10;
+    const todayReward = baseReward + bonusReward;
+    
+    // 返回签到状态（匹配前端期望格式）
+    sendSuccess(
+      res,
+      {
+        canCheckIn,
+        lastCheckInDate: status.last_check_in_date,
+        consecutiveDays: status.consecutive_check_in_days,
+        todayReward,
+      },
+      '查询成功'
+    );
   } catch (error: any) {
     console.error('查询签到状态失败:', error);
 
@@ -168,16 +212,36 @@ export async function getCheckInLogs(
     // 查询签到记录
     const logs = await checkinService.getCheckInLogs(userId, limit, offset);
 
-    // 返回签到记录
-    res.status(200).json({
-      success: true,
-      data: {
-        logs,
-        limit,
-        offset,
-        count: logs.length,
-      },
-    });
+    // 检查是否是 /history 路由
+    const isHistoryRoute = req.path === '/history' || req.path.endsWith('/history');
+    
+    if (isHistoryRoute) {
+      // 前端期望的格式：直接返回数组
+      sendSuccess(
+        res,
+        logs.map(log => ({
+          id: log.id,
+          user_id: log.user_id,
+          check_in_date: log.check_in_date,
+          coins_earned: log.coins_earned,
+          consecutive_days: log.consecutive_days,
+          tier: log.tier,
+          created_at: log.created_at,
+        })),
+        '查询成功'
+      );
+    } else {
+      // 原有格式（兼容）
+      sendSuccess(
+        res,
+        {
+          logs,
+          limit,
+          offset,
+          count: logs.length,
+        }
+      );
+    }
   } catch (error: any) {
     console.error('查询签到记录失败:', error);
 

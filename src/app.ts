@@ -13,6 +13,9 @@ import paymentRoutes from './routes/payment.routes';
 import astrologyRoutes from './routes/astrology.routes';
 import subscriptionRoutes from './routes/subscription.routes';
 import adminRoutes from './routes/admin.routes';
+import taskRoutes from './routes/task.routes';
+import resonanceRoutes from './routes/resonance.routes';
+import timespaceRoutes from './routes/timespace.routes';
 
 dotenv.config();
 
@@ -98,6 +101,15 @@ app.use('/api/subscription', subscriptionRoutes);
 
 // 👨‍💼 管理员后台路由
 app.use('/api/admin', adminRoutes);
+
+// ✅ 任务系统路由
+app.use('/api/tasks', taskRoutes);
+
+// 🔄 共振反馈路由
+app.use('/api/resonance', resonanceRoutes);
+
+// 🌌 时空导航缓存路由
+app.use('/api/timespace', timespaceRoutes);
 
 // 404 处理
 app.use((req, res) => {

@@ -1,6 +1,7 @@
 import { Response } from 'express';
 import { AuthRequest } from '../middleware/auth.middleware';
 import * as adminService from '../services/admin.service';
+import { isAdmin } from '../services/coins.service';
 
 /**
  * 管理员控制器
@@ -13,6 +14,8 @@ import * as adminService from '../services/admin.service';
  */
 export async function getUserList(req: AuthRequest, res: Response): Promise<void> {
   try {
+    console.log('🔍 [getUserList] 开始处理请求，查询参数:', req.query);
+    
     const {
       page,
       pageSize,
@@ -33,9 +36,11 @@ export async function getUserList(req: AuthRequest, res: Response): Promise<void
       sortOrder: sortOrder as 'asc' | 'desc' | undefined,
     };
 
+    console.log('🔍 [getUserList] 调用服务层，参数:', params);
     const result = await adminService.getUserList(params);
+    console.log('✅ [getUserList] 服务层返回成功，数据条数:', result.data.length);
 
-    res.status(200).json({
+    const responseData = {
       success: true,
       data: result.data,
       pagination: {
@@ -44,9 +49,21 @@ export async function getUserList(req: AuthRequest, res: Response): Promise<void
         pageSize: result.pageSize,
         totalPages: result.totalPages,
       },
+    };
+    
+    console.log('📤 [getUserList] 准备发送响应，响应数据大小:', JSON.stringify(responseData).length, 'bytes');
+    console.log('📤 [getUserList] 响应格式:', {
+      hasSuccess: 'success' in responseData,
+      hasData: 'data' in responseData,
+      hasPagination: 'pagination' in responseData,
+      dataLength: Array.isArray(responseData.data) ? responseData.data.length : 0,
     });
+    
+    res.status(200).json(responseData);
+    console.log('✅ [getUserList] 响应已发送');
   } catch (error: any) {
-    console.error('获取用户列表失败:', error);
+    console.error('❌ [getUserList] 获取用户列表失败:', error);
+    console.error('❌ [getUserList] 错误堆栈:', error.stack);
     res.status(500).json({
       success: false,
       error: '获取用户列表失败',
@@ -120,11 +137,22 @@ export async function getUserDetail(req: AuthRequest, res: Response): Promise<vo
 /**
  * 修改用户等级
  * PUT /api/admin/users/:userId/tier
+ * 支持参数名：tier (后端) 或 newTier (前端)
  */
 export async function updateUserTier(req: AuthRequest, res: Response): Promise<void> {
   try {
     const { userId } = req.params;
-    const { tier } = req.body;
+    // 支持 tier (后端) 和 newTier (前端) 两种参数名
+    // 使用空值合并运算符，优先使用 tier，如果不存在则使用 newTier
+    const tier = req.body.tier ?? req.body.newTier;
+    
+    console.log('🔍 [updateUserTier] 收到请求:', {
+      userId,
+      body: req.body,
+      hasTier: req.body.tier !== undefined,
+      hasNewTier: req.body.newTier !== undefined,
+      extractedTier: tier,
+    });
 
     if (!userId) {
       res.status(400).json({
@@ -139,7 +167,7 @@ export async function updateUserTier(req: AuthRequest, res: Response): Promise<v
       res.status(400).json({
         success: false,
         error: '参数错误',
-        message: '等级不能为空',
+        message: '等级不能为空（参数名：tier 或 newTier）',
       });
       return;
     }
@@ -153,14 +181,22 @@ export async function updateUserTier(req: AuthRequest, res: Response): Promise<v
       return;
     }
 
+    console.log('✅ [updateUserTier] 参数验证通过，调用服务层');
     await adminService.updateUserTier(req.user.userId, userId, tier);
+    console.log('✅ [updateUserTier] 服务层调用成功');
 
     res.status(200).json({
       success: true,
       message: '用户等级修改成功',
     });
   } catch (error: any) {
-    console.error('修改用户等级失败:', error);
+    console.error('❌ [updateUserTier] 修改用户等级失败:', error);
+    console.error('❌ [updateUserTier] 错误详情:', {
+      message: error.message,
+      stack: error.stack,
+      userId: req.params.userId,
+      body: req.body,
+    });
     res.status(500).json({
       success: false,
       error: '修改用户等级失败',
@@ -172,11 +208,24 @@ export async function updateUserTier(req: AuthRequest, res: Response): Promise<v
 /**
  * 调整用户天机币
  * PUT /api/admin/users/:userId/coins
+ * 支持参数名：adjustmentAmount (前端) 或 adjustment_amount (后端)
  */
 export async function adjustUserCoins(req: AuthRequest, res: Response): Promise<void> {
   try {
     const { userId } = req.params;
-    const { adjustmentAmount, reason, coinType } = req.body;
+    // 支持 adjustmentAmount (前端) 和 adjustment_amount (后端) 两种参数名
+    const adjustmentAmount = req.body.adjustmentAmount !== undefined 
+      ? req.body.adjustmentAmount 
+      : req.body.adjustment_amount;
+    const { reason, coinType } = req.body;
+    
+    console.log('🔍 [adjustUserCoins] 收到请求:', {
+      userId,
+      body: req.body,
+      extractedAdjustmentAmount: adjustmentAmount,
+      reason,
+      coinType,
+    });
 
     if (!userId) {
       res.status(400).json({
@@ -191,7 +240,17 @@ export async function adjustUserCoins(req: AuthRequest, res: Response): Promise<
       res.status(400).json({
         success: false,
         error: '参数错误',
-        message: '调整金额不能为空',
+        message: '调整金额不能为空（参数名：adjustmentAmount 或 adjustment_amount）',
+      });
+      return;
+    }
+
+    // 验证 adjustmentAmount 是否为数字
+    if (typeof adjustmentAmount !== 'number') {
+      res.status(400).json({
+        success: false,
+        error: '参数错误',
+        message: '调整金额必须是数字',
       });
       return;
     }
@@ -205,6 +264,7 @@ export async function adjustUserCoins(req: AuthRequest, res: Response): Promise<
       return;
     }
 
+    console.log('✅ [adjustUserCoins] 参数验证通过，调用服务层');
     const result = await adminService.adjustUserCoins(
       req.user.userId,
       userId,
@@ -212,6 +272,7 @@ export async function adjustUserCoins(req: AuthRequest, res: Response): Promise<
       reason || '管理员调整',
       coinType || 'tianji_coins_balance'
     );
+    console.log('✅ [adjustUserCoins] 服务层调用成功，结果:', result);
 
     res.status(200).json({
       success: true,
@@ -221,10 +282,119 @@ export async function adjustUserCoins(req: AuthRequest, res: Response): Promise<
       },
     });
   } catch (error: any) {
-    console.error('调整用户天机币失败:', error);
+    console.error('❌ [adjustUserCoins] 调整用户天机币失败:', error);
+    console.error('❌ [adjustUserCoins] 错误详情:', {
+      message: error.message,
+      stack: error.stack,
+      userId: req.params.userId,
+      body: req.body,
+    });
     res.status(500).json({
       success: false,
       error: '调整用户天机币失败',
+      message: error.message || '未知错误',
+    });
+  }
+}
+
+/**
+ * 更新用户角色
+ * PUT /api/admin/users/:userId/role
+ */
+export async function updateUserRole(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    const { userId } = req.params;
+    const { role } = req.body;
+
+    console.log('🔍 [updateUserRole] 收到请求:', {
+      userId,
+      role,
+      operatorId: req.user?.userId,
+      body: req.body,
+    });
+
+    if (!userId) {
+      res.status(400).json({
+        success: false,
+        error: '参数错误',
+        message: '用户ID不能为空',
+      });
+      return;
+    }
+
+    if (!role) {
+      res.status(400).json({
+        success: false,
+        error: '参数错误',
+        message: '角色不能为空',
+      });
+      return;
+    }
+
+    // 验证角色值
+    if (role !== 'admin' && role !== 'user') {
+      res.status(400).json({
+        success: false,
+        error: '参数错误',
+        message: '无效的角色值，必须是 "admin" 或 "user"',
+      });
+      return;
+    }
+
+    if (!req.user || !req.user.userId) {
+      res.status(401).json({
+        success: false,
+        error: '未认证',
+        message: '请先登录',
+      });
+      return;
+    }
+
+    console.log('✅ [updateUserRole] 参数验证通过，调用服务层');
+    // 调用服务层更新用户角色
+    await adminService.updateUserRole(req.user.userId, userId, role);
+    console.log('✅ [updateUserRole] 服务层调用成功，用户角色已更新');
+
+    res.status(200).json({
+      success: true,
+      message: '用户角色更新成功',
+      data: {
+        userId,
+        role,
+      },
+    });
+  } catch (error: any) {
+    console.error('❌ [updateUserRole] 更新用户角色失败:', error);
+    console.error('❌ [updateUserRole] 错误详情:', {
+      message: error.message,
+      stack: error.stack,
+      userId: req.params.userId,
+      role: req.body.role,
+      operatorId: req.user?.userId,
+    });
+    
+    // 处理已知错误
+    if (error.message?.includes('用户不存在')) {
+      res.status(404).json({
+        success: false,
+        error: '用户不存在',
+        message: error.message,
+      });
+      return;
+    }
+    
+    if (error.message?.includes('参数错误')) {
+      res.status(400).json({
+        success: false,
+        error: '参数错误',
+        message: error.message,
+      });
+      return;
+    }
+
+    res.status(500).json({
+      success: false,
+      error: '更新用户角色失败',
       message: error.message || '未知错误',
     });
   }
@@ -393,6 +563,45 @@ export async function getRevenueStats(req: AuthRequest, res: Response): Promise<
     res.status(500).json({
       success: false,
       error: '获取收入统计失败',
+      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+}
+
+/**
+ * 检查当前用户是否为管理员
+ * GET /api/admin/check
+ * 只需要认证，不需要管理员权限（普通用户也可以调用此接口检查自己的管理员状态）
+ */
+export async function checkAdminStatus(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    // 检查是否已认证
+    if (!req.user || !req.user.userId) {
+      res.status(401).json({
+        success: false,
+        error: '未认证',
+        message: '请先登录',
+      });
+      return;
+    }
+
+    const userId = req.user.userId;
+
+    // 检查是否为管理员
+    const adminStatus = await isAdmin(userId);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        isAdmin: adminStatus,
+        userId,
+      },
+    });
+  } catch (error: any) {
+    console.error('检查管理员状态失败:', error);
+    res.status(500).json({
+      success: false,
+      error: '检查管理员状态失败',
       message: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   }

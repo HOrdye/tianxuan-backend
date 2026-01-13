@@ -21,6 +21,7 @@ src/
 │       ├── payment.ts    # 支付与订单
 │       ├── subscription.ts # 订阅/会员系统
 │       ├── astrology.ts  # 紫微斗数
+│       ├── task.ts       # 任务系统
 │       └── admin.ts      # 管理员后台
 ├── types/
 │   └── api.d.ts          # 全局 API 类型定义（与后端同步）
@@ -346,6 +347,74 @@ export const astrologyApi = {
 };
 ```
 
+### 3.7 任务系统模块 (src/api/modules/task.ts)
+
+```typescript
+import request from '../request';
+import type { ApiResponse } from '@/types/api';
+
+// 任务类型
+export type TaskType = 
+  | 'complete_first_chart'      // 定锚本命
+  | 'complete_profile_info'      // 校准心性
+  | 'complete_first_insight'    // 首次推演
+  | 'view_daily_fortune'        // 每日汲气
+  | 'share_profile'             // 分享命盘
+  | 'complete_mbti_test'        // 心性测试
+  | 'recharge_first_time';      // 首次充值
+
+// 任务状态
+export type TaskStatus = 'pending' | 'completed' | 'claimed';
+
+// 任务接口
+export interface UserTask {
+  id: string;
+  user_id: string;
+  task_type: TaskType;
+  task_status: TaskStatus;
+  completed_at: string | null;
+  claimed_at: string | null;
+  coins_rewarded: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// 任务进度接口
+export interface TaskProgress {
+  total: number;
+  completed: number;
+  claimed: number;
+  progress: number; // 百分比
+}
+
+export const taskApi = {
+  // 获取用户所有任务状态
+  getTasks() {
+    return request.get<any, ApiResponse<{ tasks: UserTask[] }>>('/tasks');
+  },
+  
+  // 完成任务
+  completeTask(taskType: TaskType) {
+    return request.post<any, ApiResponse<{ task: UserTask; alreadyCompleted: boolean }>>('/tasks/complete', { taskType });
+  },
+  
+  // 领取任务奖励
+  claimReward(taskType: TaskType) {
+    return request.post<any, ApiResponse<{ coinsGranted: number }>>('/tasks/claim', { taskType });
+  },
+  
+  // 初始化新用户任务（注册时调用）
+  initializeTasks() {
+    return request.post<any, ApiResponse<{ success: boolean }>>('/tasks/initialize');
+  },
+  
+  // 获取任务完成进度
+  getProgress() {
+    return request.get<any, ApiResponse<TaskProgress>>('/tasks/progress');
+  }
+};
+```
+
 ---
 
 ## 💾 状态管理改造 (src/stores/userStore.ts)
@@ -485,6 +554,11 @@ const res = await authApi.getMe();
 | 取消订阅 | `subscriptions.update()` | `POST /api/subscription/cancel` | ✅ |
 | 命盘存档 | `star_charts.select()` | `GET /api/astrology/star-chart` | ✅ |
 | 解锁资产 | `unlocked_time_assets.insert()` | `POST /api/astrology/time-assets/unlock` | ✅ |
+| 获取任务列表 | `user_tasks.select()` | `GET /api/tasks` | ✅ |
+| 完成任务 | `user_tasks.update()` | `POST /api/tasks/complete` | ✅ |
+| 领取任务奖励 | `user_tasks.update()` + 发放天机币 | `POST /api/tasks/claim` | ✅ |
+| 初始化任务 | `user_tasks.insert()` | `POST /api/tasks/initialize` | ✅ |
+| 任务进度 | `user_tasks.select()` | `GET /api/tasks/progress` | ✅ |
 | 管理员-用户列表 | - | `GET /api/admin/users` | ✅ |
 | 管理员-数据统计 | - | `GET /api/admin/stats/overview` | ✅ |
 
@@ -517,7 +591,8 @@ npm install axios pinia
 5. ✅ 支付模块
 6. ✅ 订阅模块
 7. ✅ 紫微斗数模块
-8. ✅ 管理员后台（如果有）
+8. ✅ 任务系统模块
+9. ✅ 管理员后台（如果有）
 
 ### 步骤5：更新组件使用方式
 
@@ -551,6 +626,7 @@ await userStore.login({ email, password });
 - [ ] 支付系统（创建订单、Mock支付、订单查询）
 - [ ] 订阅系统（状态查询、权限检查、使用次数、创建/取消订阅）
 - [ ] 紫微斗数功能（命盘存档、解锁资产）
+- [ ] 任务系统（获取任务、完成任务、领取奖励、任务进度）
 - [ ] 管理员后台（用户管理、数据统计）
 - [ ] 错误处理（401/403/404/500）
 - [ ] Token过期自动登出
@@ -567,5 +643,67 @@ await userStore.login({ email, password });
 
 ---
 
+---
+
+## 📝 任务系统使用示例
+
+### 在组件中使用任务系统
+
+```typescript
+import { taskApi } from '@/api/modules/task';
+import { useUserStore } from '@/stores/userStore';
+
+// 获取用户所有任务
+const tasks = await taskApi.getTasks();
+console.log('用户任务:', tasks.data.tasks);
+
+// 完成任务
+const result = await taskApi.completeTask('complete_first_chart');
+if (result.success) {
+  console.log('任务已完成:', result.data.task);
+  if (result.data.alreadyCompleted) {
+    console.log('任务之前已完成');
+  }
+}
+
+// 领取任务奖励
+const reward = await taskApi.claimReward('complete_first_chart');
+if (reward.success) {
+  console.log('获得奖励:', reward.data.coinsGranted, '天机币');
+  // 刷新用户余额
+  await userStore.refreshBalance();
+}
+
+// 获取任务进度
+const progress = await taskApi.getProgress();
+console.log('任务进度:', progress.data);
+// { total: 7, completed: 3, claimed: 2, progress: 43 }
+```
+
+### 在用户注册时初始化任务
+
+```typescript
+// 在注册成功后调用
+import { taskApi } from '@/api/modules/task';
+
+async function handleRegister(registerForm) {
+  const userStore = useUserStore();
+  const success = await userStore.register(registerForm);
+  
+  if (success) {
+    // 初始化用户任务
+    try {
+      await taskApi.initializeTasks();
+      console.log('任务初始化成功');
+    } catch (error) {
+      console.error('任务初始化失败:', error);
+      // 不影响注册流程，可以稍后重试
+    }
+  }
+}
+```
+
+---
+
 **维护者**: 开发团队  
-**最后更新**: 2026年1月8日
+**最后更新**: 2026年1月11日

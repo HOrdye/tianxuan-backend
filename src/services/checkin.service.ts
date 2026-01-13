@@ -6,6 +6,39 @@ import { pool } from '../config/database';
  */
 
 /**
+ * 获取服务器本地时区的当前日期字符串
+ * 使用服务器本地时区的今天日期（YYYY-MM-DD格式）
+ * 
+ * @returns 日期字符串，格式：YYYY-MM-DD
+ */
+function getServerLocalDateString(): string {
+  // ✅ 使用服务器本地时区的今天开始时间
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0); // 服务器本地时间的 00:00:00
+  
+  // ✅ 格式化为 YYYY-MM-DD 格式（使用服务器本地时区）
+  const year = todayStart.getFullYear();
+  const month = String(todayStart.getMonth() + 1).padStart(2, '0');
+  const day = String(todayStart.getDate()).padStart(2, '0');
+  
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * 格式化日期为 YYYY-MM-DD 格式（使用服务器本地时区）
+ * 
+ * @param date Date 对象或日期字符串
+ * @returns 日期字符串，格式：YYYY-MM-DD
+ */
+function formatDateString(date: Date | string): string {
+  const dateObj = typeof date === 'string' ? new Date(date) : date;
+  const year = dateObj.getFullYear();
+  const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const day = String(dateObj.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/**
  * 签到结果接口
  */
 export interface CheckInResult {
@@ -38,6 +71,7 @@ export interface CheckInStatus {
   consecutive_check_in_days: number;
   can_check_in_today: boolean;
   today_date: string;
+  tier?: string; // 用户等级
 }
 
 /**
@@ -55,8 +89,8 @@ export async function dailyCheckIn(userId: string): Promise<CheckInResult> {
   }
 
   try {
-    // 1. 先查询用户当前签到状态
-    const statusResult = await pool.query(
+    // 1. 先查询用户是否存在
+    const profileResult = await pool.query(
       `SELECT 
         last_check_in_date,
         consecutive_check_in_days
@@ -65,27 +99,56 @@ export async function dailyCheckIn(userId: string): Promise<CheckInResult> {
       [userId]
     );
 
-    if (statusResult.rows.length === 0) {
+    if (profileResult.rows.length === 0) {
       throw new Error('用户不存在');
     }
 
-    const profile = statusResult.rows[0];
-    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-    const lastCheckInDate = profile.last_check_in_date
-      ? new Date(profile.last_check_in_date).toISOString().split('T')[0]
-      : null;
+    const profile = profileResult.rows[0];
+    
+    // 2. ✅ 使用 PostgreSQL 的 CURRENT_DATE 函数（服务器本地时区）
+    // 这样无论服务器在哪个时区，都会使用数据库服务器的时区设置
+    const todayCheckInResult = await pool.query(
+      `SELECT 1
+       FROM public.check_in_logs
+       WHERE user_id = $1
+         AND check_in_date = CURRENT_DATE
+       LIMIT 1`,
+      [userId]
+    );
+    
+    // 获取今天的日期字符串（用于后续使用）
+    const todayStr = getServerLocalDateString();
 
-    // 2. 检查今天是否已经签到
-    if (lastCheckInDate === today) {
+    // 4. 如果今天已签到，直接返回错误（以 check_in_logs 表为准）
+    if (todayCheckInResult.rows.length > 0) {
       throw new Error('今日已签到，请明天再来');
     }
+
+    // 4. 获取最后一次签到日期（用于计算连续天数）
+    const lastCheckInResult = await pool.query(
+      `SELECT check_in_date
+       FROM public.check_in_logs
+       WHERE user_id = $1
+       ORDER BY check_in_date DESC
+       LIMIT 1`,
+      [userId]
+    );
+
+    // ✅ 格式化日期为 YYYY-MM-DD（确保格式统一）
+    const lastCheckInDate = lastCheckInResult.rows.length > 0
+      ? formatDateString(lastCheckInResult.rows[0].check_in_date)
+      : (profile.last_check_in_date
+          ? formatDateString(profile.last_check_in_date)
+          : null);
 
     // 3. 计算连续签到天数
     let consecutiveDays = 1;
     if (lastCheckInDate) {
+      // ✅ 使用服务器本地时区计算昨天日期
       const yesterday = new Date();
       yesterday.setDate(yesterday.getDate() - 1);
-      const yesterdayStr = yesterday.toISOString().split('T')[0];
+      yesterday.setHours(0, 0, 0, 0);
+      const yesterdayStr = formatDateString(yesterday);
       
       if (lastCheckInDate === yesterdayStr) {
         // 昨天签到了，连续天数+1
@@ -103,9 +166,10 @@ export async function dailyCheckIn(userId: string): Promise<CheckInResult> {
 
     // 5. 调用数据库函数 handle_daily_check_in
     // 函数签名: handle_daily_check_in(p_user_id uuid, p_coins integer, p_consecutive_days integer, p_date date)
+    // ✅ 使用 PostgreSQL 的 CURRENT_DATE（服务器本地时区）
     const result = await pool.query(
-      'SELECT handle_daily_check_in($1, $2, $3, $4) as result',
-      [userId, totalReward, consecutiveDays, today]
+      'SELECT handle_daily_check_in($1, $2, $3, CURRENT_DATE) as result',
+      [userId, totalReward, consecutiveDays]
     );
 
     const data = result.rows[0].result;
@@ -120,7 +184,7 @@ export async function dailyCheckIn(userId: string): Promise<CheckInResult> {
       message: data.message || '签到成功',
       coins_earned: totalReward,
       consecutive_days: consecutiveDays,
-      check_in_date: today,
+      check_in_date: todayStr, // ✅ 返回北京时间日期
     };
   } catch (error: any) {
     // 记录错误日志
@@ -151,33 +215,79 @@ export async function dailyCheckIn(userId: string): Promise<CheckInResult> {
  * 
  * @param userId 用户ID
  * @returns Promise<CheckInStatus | null> 签到状态或 null（用户不存在）
+ * 
+ * ✅ 修复：直接查询 check_in_logs 表作为事实来源，避免时区问题
  */
 export async function getCheckInStatus(userId: string): Promise<CheckInStatus | null> {
   try {
-    const result = await pool.query(
+    // 1. 查询用户基本信息
+    const profileResult = await pool.query(
       `SELECT 
         last_check_in_date,
-        consecutive_check_in_days
+        consecutive_check_in_days,
+        tier
       FROM public.profiles
       WHERE id = $1`,
       [userId]
     );
 
-    if (result.rows.length === 0) {
+    if (profileResult.rows.length === 0) {
       return null;
     }
 
-    const row = result.rows[0];
-    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-    const lastCheckInDate = row.last_check_in_date
-      ? new Date(row.last_check_in_date).toISOString().split('T')[0]
-      : null;
+    const profile = profileResult.rows[0];
+    
+    // 2. ✅ 使用 PostgreSQL 的 CURRENT_DATE 函数（服务器本地时区）
+    // 直接查询 check_in_logs 表检查今天是否已签到
+    // 使用 check_in_date 字段进行比较（DATE 类型，只比较日期部分）
+    const todayCheckInResult = await pool.query(
+      `SELECT check_in_date, coins_earned, consecutive_days
+       FROM public.check_in_logs
+       WHERE user_id = $1
+         AND check_in_date = CURRENT_DATE
+       LIMIT 1`,
+      [userId]
+    );
+    
+    // 获取今天的日期字符串（用于返回）
+    const todayStr = getServerLocalDateString();
+
+    // 4. 判断今天是否已签到（以 check_in_logs 表为准）
+    const hasCheckedInToday = todayCheckInResult.rows.length > 0;
+    
+    // 5. 获取最后一次签到日期（从 check_in_logs 表获取，更准确）
+    let lastCheckInDate: string | null = null;
+    if (hasCheckedInToday) {
+      // 如果今天已签到，使用今天的日期（服务器本地时区）
+      lastCheckInDate = todayStr;
+    } else {
+      // 如果今天未签到，查询最后一次签到日期
+      const lastCheckInResult = await pool.query(
+        `SELECT check_in_date
+         FROM public.check_in_logs
+         WHERE user_id = $1
+         ORDER BY check_in_date DESC
+         LIMIT 1`,
+        [userId]
+      );
+      
+      if (lastCheckInResult.rows.length > 0) {
+        // ✅ 格式化日期为 YYYY-MM-DD（确保格式统一）
+        lastCheckInDate = formatDateString(lastCheckInResult.rows[0].check_in_date);
+      } else {
+        // 如果没有签到记录，使用 profiles 表的数据（兼容旧数据）
+        lastCheckInDate = profile.last_check_in_date
+          ? formatDateString(profile.last_check_in_date)
+          : null;
+      }
+    }
 
     return {
       last_check_in_date: lastCheckInDate,
-      consecutive_check_in_days: row.consecutive_check_in_days || 0,
-      can_check_in_today: lastCheckInDate !== today,
-      today_date: today,
+      consecutive_check_in_days: profile.consecutive_check_in_days || 0,
+      can_check_in_today: !hasCheckedInToday, // ✅ 以 check_in_logs 表为准
+      today_date: todayStr, // ✅ 返回北京时间日期
+      tier: profile.tier || 'free',
     };
   } catch (error: any) {
     console.error('查询签到状态失败:', {
@@ -226,7 +336,7 @@ export async function getCheckInLogs(
         created_at
       FROM public.check_in_logs
       WHERE user_id = $1
-      ORDER BY check_in_date DESC
+      ORDER BY check_in_date ASC
       LIMIT $2 OFFSET $3`,
       [userId, limit, offset]
     );
@@ -234,7 +344,7 @@ export async function getCheckInLogs(
     return result.rows.map((row) => ({
       id: row.id,
       user_id: row.user_id,
-      check_in_date: row.check_in_date,
+      check_in_date: formatDateString(row.check_in_date), // ✅ 统一格式化为 YYYY-MM-DD
       coins_earned: row.coins_earned,
       consecutive_days: row.consecutive_days,
       tier: row.tier,

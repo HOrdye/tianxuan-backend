@@ -129,26 +129,23 @@ export async function getCurrentUser(
     }
 
     // 从数据库获取完整的用户信息（包含 profiles 表的数据）
-    const profile = await getProfile(req.user.userId);
+    // formatForFrontend = true 会自动转换为包含 user_metadata 的格式
+    const profile = await getProfile(req.user.userId, true);
 
     if (!profile) {
       sendNotFound(res, '用户不存在');
       return;
     }
 
-    // 返回用户信息（包含 tier、balance 等 profiles 表的数据）
+    // 🔧 修复：返回完整的用户资料，包含 user_metadata
+    // 同时保留兼容字段以兼容旧代码
     sendSuccess(res, {
+      ...profile,
+      // 兼容字段
       userId: profile.id,
-      email: profile.email,
-      username: profile.username,
-      tier: profile.tier,
-      balance: profile.tianji_coins_balance || 0,
-      role: profile.role,
-      avatar_url: profile.avatar_url,
-      createdAt: profile.created_at,
-      // 保留下划线命名以兼容旧代码
       user_id: profile.id,
-      tianji_coins_balance: profile.tianji_coins_balance || 0,
+      balance: profile.tianji_coins_balance || 0,
+      createdAt: profile.created_at,
     });
   } catch (error: any) {
     console.error('获取用户信息失败:', error);

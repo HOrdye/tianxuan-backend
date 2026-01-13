@@ -894,3 +894,743 @@ export async function getOrderById(
     throw new Error(`查询订单详情失败: ${error.message || '未知错误'}`);
   }
 }
+
+/**
+ * 充值包管理相关接口和函数
+ */
+
+/**
+ * 充值包类型
+ */
+export type PackType = 'newcomer' | 'enlightenment' | 'omniscience';
+
+/**
+ * 充值包数据结构
+ */
+export interface CoinPack {
+  id: string;
+  pack_type: PackType;
+  name: string;
+  subtitle: string | null;
+  price: number;
+  coins: number;
+  unit_price: number;
+  description: string | null;
+  is_limited: boolean;
+  limit_count: number | null;
+  is_active: boolean;
+  sort_order: number;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/**
+ * 购买资格检查结果
+ */
+export interface PurchaseEligibility {
+  eligible: boolean;
+  reason: string | null;
+  purchaseCount: number;
+  limitCount: number | null;
+}
+
+/**
+ * 获取可用充值包列表
+ * 只返回 is_active = true 的充值包，按 sort_order 升序排序
+ * 
+ * @returns Promise<CoinPack[]> 充值包列表
+ */
+export async function getPacks(): Promise<CoinPack[]> {
+  try {
+    const result = await pool.query(
+      `SELECT 
+        id, pack_type, name, subtitle, price, coins, unit_price,
+        description, is_limited, limit_count, is_active, sort_order,
+        created_at, updated_at
+      FROM public.coin_packs
+      WHERE is_active = true
+      ORDER BY sort_order ASC`,
+      []
+    );
+
+    return result.rows.map((row) => ({
+      id: row.id,
+      pack_type: row.pack_type,
+      name: row.name,
+      subtitle: row.subtitle,
+      price: parseFloat(row.price),
+      coins: parseInt(row.coins, 10),
+      unit_price: parseFloat(row.unit_price),
+      description: row.description,
+      is_limited: row.is_limited || false,
+      limit_count: row.limit_count,
+      is_active: row.is_active || false,
+      sort_order: row.sort_order || 0,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    }));
+  } catch (error: any) {
+    console.error('查询充值包列表失败:', {
+      error: error.message,
+    });
+    throw new Error(`查询充值包列表失败: ${error.message || '未知错误'}`);
+  }
+}
+
+/**
+ * 根据类型获取充值包
+ * 
+ * @param packType 充值包类型
+ * @returns Promise<CoinPack | null> 充值包数据或 null（不存在或已下架）
+ */
+export async function getPackByType(packType: PackType): Promise<CoinPack | null> {
+  if (!packType) {
+    throw new Error('参数错误：充值包类型必须提供');
+  }
+
+  // 验证 packType 是否有效
+  const validPackTypes: PackType[] = ['newcomer', 'enlightenment', 'omniscience'];
+  if (!validPackTypes.includes(packType)) {
+    throw new Error(`参数错误：packType 必须是以下之一: ${validPackTypes.join(', ')}`);
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT 
+        id, pack_type, name, subtitle, price, coins, unit_price,
+        description, is_limited, limit_count, is_active, sort_order,
+        created_at, updated_at
+      FROM public.coin_packs
+      WHERE pack_type = $1 AND is_active = true`,
+      [packType]
+    );
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    const row = result.rows[0];
+    return {
+      id: row.id,
+      pack_type: row.pack_type,
+      name: row.name,
+      subtitle: row.subtitle,
+      price: parseFloat(row.price),
+      coins: parseInt(row.coins, 10),
+      unit_price: parseFloat(row.unit_price),
+      description: row.description,
+      is_limited: row.is_limited || false,
+      limit_count: row.limit_count,
+      is_active: row.is_active || false,
+      sort_order: row.sort_order || 0,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    };
+  } catch (error: any) {
+    console.error('查询充值包失败:', {
+      packType,
+      error: error.message,
+    });
+    throw new Error(`查询充值包失败: ${error.message || '未知错误'}`);
+  }
+}
+
+/**
+ * 检查购买资格
+ * 检查用户是否可以购买指定类型的充值包（限购逻辑）
+ * 
+ * @param userId 用户ID
+ * @param packType 充值包类型
+ * @returns Promise<PurchaseEligibility> 购买资格检查结果
+ */
+export async function checkPurchaseEligibility(
+  userId: string,
+  packType: PackType
+): Promise<PurchaseEligibility> {
+  if (!userId || !packType) {
+    throw new Error('参数错误：用户ID和充值包类型必须提供');
+  }
+
+  // 验证 packType 是否有效
+  const validPackTypes: PackType[] = ['newcomer', 'enlightenment', 'omniscience'];
+  if (!validPackTypes.includes(packType)) {
+    throw new Error(`参数错误：packType 必须是以下之一: ${validPackTypes.join(', ')}`);
+  }
+
+  try {
+    // 先查询充值包信息
+    const pack = await getPackByType(packType);
+    
+    if (!pack) {
+      throw new Error('充值包不存在或已下架');
+    }
+
+    // 如果不限购，直接返回可购买
+    if (!pack.is_limited || !pack.limit_count) {
+      return {
+        eligible: true,
+        reason: null,
+        purchaseCount: 0,
+        limitCount: null,
+      };
+    }
+
+    // 查询用户已购买次数（只统计已支付的订单）
+    const purchaseResult = await pool.query(
+      `SELECT COUNT(*) as purchase_count
+       FROM public.transactions
+       WHERE user_id = $1 
+         AND pack_type = $2 
+         AND status = 'paid'
+         AND item_type = 'coin_pack'`,
+      [userId, packType]
+    );
+
+    const purchaseCount = parseInt(purchaseResult.rows[0].purchase_count, 10);
+    const limitCount = pack.limit_count;
+
+    // 判断是否可购买
+    const eligible = purchaseCount < limitCount;
+    const reason = eligible ? null : '已达到限购次数';
+
+    return {
+      eligible,
+      reason,
+      purchaseCount,
+      limitCount,
+    };
+  } catch (error: any) {
+    console.error('检查购买资格失败:', {
+      userId,
+      packType,
+      error: error.message,
+    });
+    throw new Error(`检查购买资格失败: ${error.message || '未知错误'}`);
+  }
+}
+
+/**
+ * 配额日志相关接口和函数
+ */
+
+/**
+ * 配额日志数据结构
+ */
+export interface QuotaLog {
+  id: string;
+  user_id: string;
+  feature: string;
+  action_type: string;
+  amount: number;
+  balance_before: number;
+  balance_after: number;
+  description: string | null;
+  metadata: any | null;
+  created_at: Date;
+}
+
+/**
+ * 查询配额日志
+ * 
+ * @param userId 用户ID
+ * @param feature 功能名称（可选，如 'yijing', 'ziwei'）
+ * @param actionType 操作类型（可选，如 'consume', 'grant', 'refund'）
+ * @param limit 返回记录数限制（可选，默认50）
+ * @param offset 偏移量（可选，默认0）
+ * @returns Promise<QuotaLog[]> 配额日志列表
+ */
+export async function getQuotaLogs(
+  userId: string,
+  feature?: string,
+  actionType?: string,
+  limit: number = 50,
+  offset: number = 0
+): Promise<QuotaLog[]> {
+  // 参数验证
+  if (!userId) {
+    throw new Error('参数错误：用户ID必须有效');
+  }
+
+  if (limit < 1 || limit > 100) {
+    throw new Error('参数错误：limit 必须在 1-100 之间');
+  }
+
+  if (offset < 0) {
+    throw new Error('参数错误：offset 不能为负数');
+  }
+
+  try {
+    // 构建查询SQL
+    let query = `
+      SELECT 
+        id,
+        user_id,
+        feature,
+        action_type,
+        amount,
+        balance_before,
+        balance_after,
+        description,
+        metadata,
+        created_at
+      FROM public.quota_logs
+      WHERE user_id = $1
+    `;
+
+    const params: any[] = [userId];
+    let paramIndex = 2;
+
+    // 如果指定了功能名称，添加过滤
+    if (feature) {
+      query += ` AND feature = $${paramIndex}`;
+      params.push(feature);
+      paramIndex++;
+    }
+
+    // 如果指定了操作类型，添加过滤
+    if (actionType) {
+      query += ` AND action_type = $${paramIndex}`;
+      params.push(actionType);
+      paramIndex++;
+    }
+
+    query += ` ORDER BY created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    params.push(limit, offset);
+
+    const result = await pool.query(query, params);
+
+    return result.rows.map((row) => ({
+      id: row.id,
+      user_id: row.user_id,
+      feature: row.feature,
+      action_type: row.action_type,
+      amount: row.amount,
+      balance_before: row.balance_before,
+      balance_after: row.balance_after,
+      description: row.description,
+      metadata: row.metadata ? (typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata) : null,
+      created_at: row.created_at,
+    }));
+  } catch (error: any) {
+    console.error('查询配额日志失败:', {
+      userId,
+      feature,
+      actionType,
+      limit,
+      offset,
+      error: error.message,
+    });
+    
+    // 如果表不存在，返回空数组（兼容性处理）
+    if (error.message?.includes('does not exist') || error.message?.includes('不存在')) {
+      console.warn('配额日志表不存在，返回空数组');
+      return [];
+    }
+    
+    throw new Error(`查询配额日志失败: ${error.message || '未知错误'}`);
+  }
+}
+
+/**
+ * 退款日志相关接口和函数
+ */
+
+/**
+ * 退款日志数据结构
+ */
+export interface RefundLog {
+  id: string;
+  user_id: string;
+  order_id: string | null;  // 订单ID（订单退款场景）
+  original_request_id: string | null;  // 原始请求ID（AI服务退款场景）
+  refund_amount: number | null;  // 退款金额（人民币，订单退款场景）
+  refund_coins: number;  // 退款天机币数量
+  refund_reason: string | null;
+  status: string;
+  processed_at: Date | null;
+  created_at: Date;
+}
+
+/**
+ * 创建退款日志参数（订单退款场景）
+ */
+export interface CreateOrderRefundParams {
+  userId: string;
+  orderId: string;
+  refundAmount: number;
+  refundCoins: number;
+  refundReason?: string;
+}
+
+/**
+ * 创建退款日志参数（AI服务退款场景）
+ */
+export interface CreateServiceRefundParams {
+  userId: string;
+  amount: number;  // 退款天机币数量
+  reason: string;  // 退款原因
+  originalDeduction: number;  // 原始扣费金额（用于记录）
+  originalRequestId: string;  // 原始请求ID（交易ID）
+}
+
+/**
+ * 创建退款日志（订单退款场景）
+ * 
+ * @param params 退款参数
+ * @returns Promise<RefundLog> 创建的退款日志
+ */
+export async function createOrderRefundLog(
+  params: CreateOrderRefundParams
+): Promise<RefundLog> {
+  const { userId, orderId, refundAmount, refundCoins, refundReason } = params;
+
+  // 参数验证
+  if (!userId) {
+    throw new Error('参数错误：用户ID必须有效');
+  }
+
+  if (!orderId) {
+    throw new Error('参数错误：订单ID必须有效');
+  }
+
+  if (!refundAmount || refundAmount <= 0) {
+    throw new Error('参数错误：退款金额必须大于0');
+  }
+
+  if (!refundCoins || refundCoins < 0) {
+    throw new Error('参数错误：退款天机币数量不能为负数');
+  }
+
+  // 获取数据库连接（用于事务）
+  const client = await pool.connect();
+
+  try {
+    // 开始事务
+    await client.query('BEGIN');
+
+    // 1. 验证订单是否存在且属于该用户
+    const orderResult = await client.query(
+      `SELECT id, user_id, amount, coins_amount, status
+       FROM public.transactions
+       WHERE id = $1 AND user_id = $2`,
+      [orderId, userId]
+    );
+
+    if (orderResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      throw new Error('订单不存在或不属于当前用户');
+    }
+
+    const order = orderResult.rows[0];
+
+    // 2. 验证订单状态（只有已完成的订单才能退款）
+    if (order.status !== 'completed') {
+      await client.query('ROLLBACK');
+      throw new Error(`订单状态为 ${order.status}，无法退款`);
+    }
+
+    // 3. 创建退款日志
+    const refundLogId = randomUUID();
+    await client.query(
+      `INSERT INTO public.refund_logs (
+        id,
+        user_id,
+        order_id,
+        original_request_id,
+        refund_amount,
+        refund_coins,
+        refund_reason,
+        status,
+        created_at
+      )
+      VALUES ($1, $2, $3, NULL, $4, $5, $6, 'pending', NOW())`,
+      [
+        refundLogId,
+        userId,
+        orderId,
+        refundAmount,
+        refundCoins,
+        refundReason || null,
+      ]
+    );
+
+    // 提交事务
+    await client.query('COMMIT');
+
+    // 查询创建的退款日志
+    const logResult = await client.query(
+      `SELECT 
+        id,
+        user_id,
+        order_id,
+        original_request_id,
+        refund_amount,
+        refund_coins,
+        refund_reason,
+        status,
+        processed_at,
+        created_at
+      FROM public.refund_logs
+      WHERE id = $1`,
+      [refundLogId]
+    );
+
+    const row = logResult.rows[0];
+    return {
+      id: row.id,
+      user_id: row.user_id,
+      order_id: row.order_id,
+      original_request_id: row.original_request_id,
+      refund_amount: row.refund_amount,
+      refund_coins: row.refund_coins,
+      refund_reason: row.refund_reason,
+      status: row.status,
+      processed_at: row.processed_at,
+      created_at: row.created_at,
+    };
+  } catch (error: any) {
+    // 回滚事务
+    await client.query('ROLLBACK');
+
+    console.error('创建订单退款日志失败:', {
+      userId,
+      orderId,
+      refundAmount,
+      refundCoins,
+      error: error.message,
+    });
+
+    // 如果是已知错误，直接抛出
+    if (error.message?.includes('订单不存在') || 
+        error.message?.includes('参数错误') ||
+        error.message?.includes('无法退款')) {
+      throw error;
+    }
+
+    // 其他错误，包装后抛出
+    throw new Error(`创建订单退款日志失败: ${error.message || '未知错误'}`);
+  } finally {
+    // 释放连接
+    client.release();
+  }
+}
+
+/**
+ * 创建退款日志（AI服务退款场景）
+ * 
+ * @param params 退款参数
+ * @returns Promise<RefundLog> 创建的退款日志
+ */
+export async function createServiceRefundLog(
+  params: CreateServiceRefundParams
+): Promise<RefundLog> {
+  const { userId, amount, reason, originalDeduction, originalRequestId } = params;
+
+  // 参数验证
+  if (!userId) {
+    throw new Error('参数错误：用户ID必须有效');
+  }
+
+  if (!amount || amount <= 0) {
+    throw new Error('参数错误：退款天机币数量必须大于0');
+  }
+
+  if (!originalRequestId || typeof originalRequestId !== 'string') {
+    throw new Error('参数错误：原始请求ID必须有效');
+  }
+
+  if (!reason || typeof reason !== 'string') {
+    throw new Error('参数错误：退款原因必须提供');
+  }
+
+  // 获取数据库连接（用于事务）
+  const client = await pool.connect();
+
+  try {
+    // 开始事务
+    await client.query('BEGIN');
+
+    // 1. 验证原始交易是否存在（可选，用于记录）
+    // 这里不强制要求交易存在，因为可能是系统自动退款
+
+    // 2. 创建退款日志
+    const refundLogId = randomUUID();
+    await client.query(
+      `INSERT INTO public.refund_logs (
+        id,
+        user_id,
+        order_id,
+        original_request_id,
+        refund_amount,
+        refund_coins,
+        refund_reason,
+        status,
+        created_at
+      )
+      VALUES ($1, $2, NULL, $3, NULL, $4, $5, 'pending', NOW())`,
+      [
+        refundLogId,
+        userId,
+        originalRequestId,
+        amount,  // refund_coins
+        reason,  // refund_reason
+      ]
+    );
+
+    // 3. 退还天机币给用户
+    await client.query(
+      `UPDATE public.profiles
+       SET tianji_coins_balance = tianji_coins_balance + $1,
+           updated_at = NOW()
+       WHERE id = $2`,
+      [amount, userId]
+    );
+
+    // 提交事务
+    await client.query('COMMIT');
+
+    // 查询创建的退款日志
+    const logResult = await client.query(
+      `SELECT 
+        id,
+        user_id,
+        order_id,
+        original_request_id,
+        refund_amount,
+        refund_coins,
+        refund_reason,
+        status,
+        processed_at,
+        created_at
+      FROM public.refund_logs
+      WHERE id = $1`,
+      [refundLogId]
+    );
+
+    const row = logResult.rows[0];
+    return {
+      id: row.id,
+      user_id: row.user_id,
+      order_id: row.order_id,
+      original_request_id: row.original_request_id,
+      refund_amount: row.refund_amount,
+      refund_coins: row.refund_coins,
+      refund_reason: row.refund_reason,
+      status: row.status,
+      processed_at: row.processed_at,
+      created_at: row.created_at,
+    };
+  } catch (error: any) {
+    // 回滚事务
+    await client.query('ROLLBACK');
+
+    console.error('创建AI服务退款日志失败:', {
+      userId,
+      amount,
+      originalRequestId,
+      error: error.message,
+    });
+
+    // 如果是已知错误，直接抛出
+    if (error.message?.includes('参数错误')) {
+      throw error;
+    }
+
+    // 其他错误，包装后抛出
+    throw new Error(`创建AI服务退款日志失败: ${error.message || '未知错误'}`);
+  } finally {
+    // 释放连接
+    client.release();
+  }
+}
+
+/**
+ * 创建退款日志（统一接口，自动识别场景）
+ * 
+ * @param userId 用户ID
+ * @param params 退款参数（可以是订单退款或AI服务退款）
+ * @returns Promise<RefundLog> 创建的退款日志
+ */
+export async function createRefundLog(
+  userId: string,
+  params: Partial<CreateOrderRefundParams & CreateServiceRefundParams>
+): Promise<RefundLog> {
+  // 判断是订单退款还是AI服务退款
+  if (params.orderId) {
+    // 订单退款场景
+    return createOrderRefundLog({
+      userId,
+      orderId: params.orderId,
+      refundAmount: params.refundAmount!,
+      refundCoins: params.refundCoins!,
+      refundReason: params.refundReason,
+    });
+  } else if (params.originalRequestId) {
+    // AI服务退款场景
+    return createServiceRefundLog({
+      userId,
+      amount: params.amount!,
+      reason: params.reason!,
+      originalDeduction: params.originalDeduction || params.amount!,
+      originalRequestId: params.originalRequestId,
+    });
+  } else {
+    throw new Error('参数错误：必须提供 orderId（订单退款）或 originalRequestId（AI服务退款）');
+  }
+}
+
+/**
+ * 检查首充状态
+ * 检查用户是否已经完成首次充值
+ * 
+ * @param userId 用户ID
+ * @returns Promise<{ isFirstPurchase: boolean; firstPurchaseOrderId: string | null; firstPurchaseDate: Date | null }> 首充状态
+ */
+export async function checkFirstPurchase(userId: string): Promise<{
+  isFirstPurchase: boolean;
+  firstPurchaseOrderId: string | null;
+  firstPurchaseDate: Date | null;
+}> {
+  // 参数验证
+  if (!userId) {
+    throw new Error('参数错误：用户ID必须有效');
+  }
+
+  try {
+    // 查询用户是否有已完成的充值订单
+    const result = await pool.query(
+      `SELECT id, created_at
+       FROM public.transactions
+       WHERE user_id = $1 
+         AND type = 'purchase' 
+         AND status = 'completed'
+         AND item_type = 'coin_pack'
+       ORDER BY created_at ASC
+       LIMIT 1`,
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      // 用户还没有完成首次充值
+      return {
+        isFirstPurchase: true,
+        firstPurchaseOrderId: null,
+        firstPurchaseDate: null,
+      };
+    }
+
+    // 用户已经完成首次充值
+    const firstOrder = result.rows[0];
+    return {
+      isFirstPurchase: false,
+      firstPurchaseOrderId: firstOrder.id,
+      firstPurchaseDate: firstOrder.created_at,
+    };
+  } catch (error: any) {
+    console.error('检查首充状态失败:', {
+      userId,
+      error: error.message,
+    });
+    throw new Error(`检查首充状态失败: ${error.message || '未知错误'}`);
+  }
+}

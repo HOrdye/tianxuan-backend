@@ -8,6 +8,15 @@ import {
   isTimeAssetUnlocked,
   saveTimespaceCache,
   getTimespaceCache,
+  getChartArchives,
+  getChartArchive,
+  saveChartArchive,
+  updateChartArchive,
+  deleteChartArchive,
+  clearChartData,
+  saveAnalysisSession,
+  getAnalysisSessions,
+  deleteAnalysisSessionsByProfile,
 } from '../controllers/astrology.controller';
 import { authenticateToken } from '../middleware/auth.middleware';
 
@@ -238,5 +247,242 @@ router.post('/cache', authenticateToken, saveTimespaceCache);
  * }
  */
 router.get('/cache', authenticateToken, getTimespaceCache);
+
+/**
+ * GET /api/astrology/archives
+ * 查询命盘存档列表（需要认证，返回摘要，不包含完整命盘数据）
+ * 
+ * 请求头：
+ * Authorization: Bearer <token>
+ * 
+ * 查询参数：
+ * - relationshipType?: RelationshipType - 关系类型筛选
+ * - keyword?: string - 搜索关键词（匹配名称、备注、标签）
+ * - limit?: number - 分页大小（默认50，最大100）
+ * - offset?: number - 分页偏移（默认0）
+ * 
+ * 响应：
+ * {
+ *   "success": true,
+ *   "data": {
+ *     "archives": [
+ *       {
+ *         "id": "uuid",
+ *         "userId": "uuid",
+ *         "name": "存档名称",
+ *         "relationshipType": "self",
+ *         "customLabel": "自定义标签",
+ *         "birthInfo": { ... },  // ⚠️ 只包含出生信息，不包含完整命盘
+ *         "notes": "备注",
+ *         "tags": ["标签1", "标签2"],
+ *         "createdAt": "2025-01-08T12:00:00Z",
+ *         "updatedAt": "2025-01-08T12:00:00Z"
+ *       }
+ *     ]
+ *   }
+ * }
+ */
+router.get('/archives', authenticateToken, getChartArchives);
+
+/**
+ * GET /api/astrology/archives/:archiveId
+ * 查询单个命盘存档（需要认证，返回完整数据）
+ * 
+ * 请求头：
+ * Authorization: Bearer <token>
+ * 
+ * 响应：
+ * {
+ *   "success": true,
+ *   "data": {
+ *     "id": "uuid",
+ *     "userId": "uuid",
+ *     "chart": { ... },  // 完整命盘数据
+ *     "name": "存档名称",
+ *     "relationshipType": "self",
+ *     "customLabel": "自定义标签",
+ *     "notes": "备注",
+ *     "tags": ["标签1", "标签2"],
+ *     "createdAt": "2025-01-08T12:00:00Z",
+ *     "updatedAt": "2025-01-08T12:00:00Z"
+ *   }
+ * }
+ */
+router.get('/archives/:archiveId', authenticateToken, getChartArchive);
+
+/**
+ * POST /api/astrology/archives
+ * 创建命盘存档（需要认证）
+ * 
+ * 请求头：
+ * Authorization: Bearer <token>
+ * 
+ * 请求体：
+ * {
+ *   "chart": ZiweiChart,              // 完整命盘数据（必填）
+ *   "name": "存档名称",                // 必填
+ *   "relationshipType": RelationshipType,  // 关系类型（必填）
+ *   "customLabel"?: "自定义标签",       // 可选
+ *   "notes"?: "备注",                  // 可选
+ *   "tags"?: ["标签1", "标签2"]        // 可选
+ * }
+ * 
+ * ⚠️ 重要：
+ * - 如果 relationshipType === 'self'，每个用户只能有一个，创建时会自动更新现有记录
+ * - 命盘数据必须包含 birthInfo（出生信息）
+ * - birthInfo.hour 是时辰索引（0-11），不是24小时制！
+ * 
+ * 响应：
+ * {
+ *   "success": true,
+ *   "message": "命盘存档保存成功" 或 "我的命盘更新成功",
+ *   "data": {
+ *     "archiveId": "uuid"
+ *   }
+ * }
+ */
+router.post('/archives', authenticateToken, saveChartArchive);
+
+/**
+ * PUT /api/astrology/archives/:archiveId
+ * 更新命盘存档（需要认证）
+ * 
+ * 请求头：
+ * Authorization: Bearer <token>
+ * 
+ * 请求体（部分字段，可选）：
+ * {
+ *   "name"?: string,
+ *   "relationshipType"?: RelationshipType,
+ *   "customLabel"?: string,
+ *   "notes"?: string,
+ *   "tags"?: string[],
+ *   "chart"?: ZiweiChart  // 可选：更新命盘数据
+ * }
+ * 
+ * 响应：
+ * {
+ *   "success": true,
+ *   "message": "命盘存档更新成功",
+ *   "data": ChartArchive  // 更新后的完整存档数据
+ * }
+ */
+router.put('/archives/:archiveId', authenticateToken, updateChartArchive);
+
+/**
+ * DELETE /api/astrology/archives/:archiveId
+ * 删除命盘存档（需要认证）
+ * 
+ * 请求头：
+ * Authorization: Bearer <token>
+ * 
+ * ⚠️ 重要：如果删除的是"我的命盘"（relationshipType === 'self'），会同时清理：
+ * - star_charts 表中的记录
+ * - ziwei_chart_archives 表中的记录（relationship_type = 'self'）
+ * - unlocked_time_assets 表中的记录
+ * - timespace_cache 表中的记录
+ * - analysis_sessions 表中的相关分析会话（如果存在）
+ * 
+ * 响应：
+ * {
+ *   "success": true,
+ *   "message": "命盘存档删除成功" 或 "我的命盘及相关数据已删除"
+ * }
+ */
+router.delete('/archives/:archiveId', authenticateToken, deleteChartArchive);
+
+/**
+ * DELETE /api/astrology/clear-chart
+ * 清除命盘数据（需要认证，清除多个数据源）
+ * 
+ * 请求头：
+ * Authorization: Bearer <token>
+ * 
+ * 响应：
+ * {
+ *   "success": true,
+ *   "message": "命盘数据清除成功",
+ *   "data": {
+ *     "cleared": [
+ *       "star_charts (1 条记录)",
+ *       "chart_archives (2 条记录)",
+ *       "unlocked_time_assets (3 条记录)",
+ *       "timespace_cache (4 条记录)"
+ *     ]
+ *   }
+ * }
+ */
+router.delete('/clear-chart', authenticateToken, clearChartData);
+
+/**
+ * POST /api/astrology/analysis-sessions
+ * 保存分析会话（需要认证）
+ * 
+ * 请求头：
+ * Authorization: Bearer <token>
+ * 
+ * 请求体：
+ * {
+ *   "profileId": "uuid",        // 命盘ID（必填）
+ *   "sessionData": { ... }      // 分析会话数据（必填，JSONB格式）
+ * }
+ * 
+ * 响应：
+ * {
+ *   "success": true,
+ *   "message": "分析会话保存成功",
+ *   "data": {
+ *     "sessionId": "uuid"
+ *   }
+ * }
+ */
+router.post('/analysis-sessions', authenticateToken, saveAnalysisSession);
+
+/**
+ * GET /api/astrology/analysis-sessions
+ * 查询分析会话列表（需要认证）
+ * 
+ * 请求头：
+ * Authorization: Bearer <token>
+ * 
+ * 查询参数：
+ * - profileId?: string - 命盘ID（可选，如果提供则只查询该命盘的会话）
+ * 
+ * 响应：
+ * {
+ *   "success": true,
+ *   "data": {
+ *     "sessions": [
+ *       {
+ *         "id": "uuid",
+ *         "userId": "uuid",
+ *         "profileId": "uuid",
+ *         "sessionData": { ... },
+ *         "createdAt": "2025-01-08T12:00:00Z",
+ *         "updatedAt": "2025-01-08T12:00:00Z"
+ *       }
+ *     ]
+ *   }
+ * }
+ */
+router.get('/analysis-sessions', authenticateToken, getAnalysisSessions);
+
+/**
+ * DELETE /api/astrology/analysis-sessions/by-profile/:profileId
+ * 删除命盘的所有分析会话（需要认证）
+ * 
+ * 请求头：
+ * Authorization: Bearer <token>
+ * 
+ * 响应：
+ * {
+ *   "success": true,
+ *   "message": "成功删除 N 个分析会话",
+ *   "data": {
+ *     "deletedCount": 5
+ *   }
+ * }
+ */
+router.delete('/analysis-sessions/by-profile/:profileId', authenticateToken, deleteAnalysisSessionsByProfile);
 
 export default router;
