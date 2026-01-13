@@ -403,30 +403,49 @@ export async function updateUserRole(req: AuthRequest, res: Response): Promise<v
 /**
  * 获取天机币交易流水
  * GET /api/admin/coin-transactions
+ * 支持参数名：userId (前端) 或 user_id (后端)
  */
 export async function getCoinTransactions(req: AuthRequest, res: Response): Promise<void> {
   try {
     const {
       page,
       pageSize,
-      userId,
+      userId: userIdQuery,
+      user_id: userIdSnake,
       startDate,
       endDate,
       type,
       status,
     } = req.query;
 
+    // 支持 userId (前端) 和 user_id (后端) 两种参数名
+    const userId = (userIdQuery ?? userIdSnake) as string | undefined;
+
+    console.log('🔍 [getCoinTransactions] 收到请求:', {
+      url: req.url,
+      originalUrl: req.originalUrl,
+      query: req.query,
+      queryKeys: Object.keys(req.query),
+      extractedUserId: userId,
+      hasUserId: userIdQuery !== undefined,
+      hasUser_id: userIdSnake !== undefined,
+      userIdQueryValue: userIdQuery,
+      userIdSnakeValue: userIdSnake,
+    });
+
     const params: adminService.TransactionListParams = {
       page: page ? parseInt(page as string, 10) : undefined,
       pageSize: pageSize ? parseInt(pageSize as string, 10) : undefined,
-      userId: userId as string | undefined,
+      userId: userId,
       startDate: startDate as string | undefined,
       endDate: endDate as string | undefined,
       type: type as string | undefined,
       status: status as string | undefined,
     };
 
+    console.log('🔍 [getCoinTransactions] 调用服务层，参数:', params);
     const result = await adminService.getCoinTransactions(params);
+    console.log('✅ [getCoinTransactions] 服务层返回成功，数据条数:', result.data.length);
 
     res.status(200).json({
       success: true,
@@ -439,7 +458,12 @@ export async function getCoinTransactions(req: AuthRequest, res: Response): Prom
       },
     });
   } catch (error: any) {
-    console.error('获取天机币交易流水失败:', error);
+    console.error('❌ [getCoinTransactions] 获取天机币交易流水失败:', error);
+    console.error('❌ [getCoinTransactions] 错误详情:', {
+      message: error.message,
+      stack: error.stack,
+      query: req.query,
+    });
     res.status(500).json({
       success: false,
       error: '获取天机币交易流水失败',
@@ -451,30 +475,44 @@ export async function getCoinTransactions(req: AuthRequest, res: Response): Prom
 /**
  * 获取支付交易流水
  * GET /api/admin/payment-transactions
+ * 支持参数名：userId (前端) 或 user_id (后端)
  */
 export async function getPaymentTransactions(req: AuthRequest, res: Response): Promise<void> {
   try {
     const {
       page,
       pageSize,
-      userId,
+      userId: userIdQuery,
+      user_id: userIdSnake,
       startDate,
       endDate,
       type,
       status,
     } = req.query;
 
+    // 支持 userId (前端) 和 user_id (后端) 两种参数名
+    const userId = (userIdQuery ?? userIdSnake) as string | undefined;
+
+    console.log('🔍 [getPaymentTransactions] 收到请求:', {
+      query: req.query,
+      extractedUserId: userId,
+      hasUserId: userIdQuery !== undefined,
+      hasUser_id: userIdSnake !== undefined,
+    });
+
     const params: adminService.TransactionListParams = {
       page: page ? parseInt(page as string, 10) : undefined,
       pageSize: pageSize ? parseInt(pageSize as string, 10) : undefined,
-      userId: userId as string | undefined,
+      userId: userId,
       startDate: startDate as string | undefined,
       endDate: endDate as string | undefined,
       type: type as string | undefined,
       status: status as string | undefined,
     };
 
+    console.log('🔍 [getPaymentTransactions] 调用服务层，参数:', params);
     const result = await adminService.getPaymentTransactions(params);
+    console.log('✅ [getPaymentTransactions] 服务层返回成功，数据条数:', result.data.length);
 
     res.status(200).json({
       success: true,
@@ -487,7 +525,12 @@ export async function getPaymentTransactions(req: AuthRequest, res: Response): P
       },
     });
   } catch (error: any) {
-    console.error('获取支付交易流水失败:', error);
+    console.error('❌ [getPaymentTransactions] 获取支付交易流水失败:', error);
+    console.error('❌ [getPaymentTransactions] 错误详情:', {
+      message: error.message,
+      stack: error.stack,
+      query: req.query,
+    });
     res.status(500).json({
       success: false,
       error: '获取支付交易流水失败',

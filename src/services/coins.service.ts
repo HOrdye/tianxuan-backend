@@ -187,9 +187,12 @@ export async function adminAdjustCoins(
     throw new Error('调整金额不能为0');
   }
 
+  // 获取数据库连接（用于事务）
+  const client = await pool.connect();
+
   try {
     // 先检查操作人是否为管理员
-    const isAdminResult = await pool.query(
+    const isAdminResult = await client.query(
       'SELECT is_admin($1) as is_admin',
       [operatorId]
     );
@@ -198,34 +201,104 @@ export async function adminAdjustCoins(
       throw new Error('只有管理员可以执行此操作');
     }
 
-    // 调用数据库函数 admin_adjust_coins
-    const result = await pool.query(
-      'SELECT admin_adjust_coins($1, $2, $3, $4, $5) as result',
-      [operatorId, targetUserId, adjustmentAmount, reason, coinType]
+    // 开始事务
+    await client.query('BEGIN');
+
+    // 1. 查询当前余额（使用 FOR UPDATE 锁定行，防止并发修改）
+    const userRes = await client.query(
+      `SELECT ${coinType} as balance FROM public.profiles WHERE id = $1 FOR UPDATE`,
+      [targetUserId]
     );
 
-    const data = result.rows[0].result;
-
-    // 检查函数返回结果
-    if (!data || !data.success) {
-      throw new Error(data?.error || '调整失败');
+    if (userRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      throw new Error('用户不存在');
     }
+
+    const oldBalance = userRes.rows[0].balance || 0;
+    const newBalance = oldBalance + adjustmentAmount;
+
+    // 如果余额不足（调整后为负数），根据业务需求决定是否允许
+    // 这里暂时允许负数，如果需要限制，可以添加检查
+    if (newBalance < 0 && coinType === 'tianji_coins_balance') {
+      // 可以根据业务需求决定是否允许负数
+      // await client.query('ROLLBACK');
+      // throw new Error('余额不足');
+    }
+
+    // 2. 更新用户余额
+    await client.query(
+      `UPDATE public.profiles 
+       SET ${coinType} = $1, updated_at = NOW() 
+       WHERE id = $2`,
+      [newBalance, targetUserId]
+    );
+
+    // 3. 🟢 关键修复：插入交易流水记录到 transactions 表
+    // 这样管理员后台的 CoinTransactionLogs 页面才能查到数据
+    const transactionType = 'admin_adjust';
+    const transactionDescription = reason || `管理员调整：${oldBalance} → ${newBalance} (${adjustmentAmount > 0 ? '+' : ''}${adjustmentAmount})`;
+    
+    const transactionResult = await client.query(
+      `INSERT INTO public.transactions (
+        id,
+        user_id,
+        type,
+        amount,
+        coins_amount,
+        item_type,
+        description,
+        operator_id,
+        status,
+        created_at
+      )
+      VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, 'completed', NOW())
+      RETURNING id`,
+      [
+        targetUserId,
+        transactionType,
+        0, // amount 为 0（天机币调整不涉及金额）
+        adjustmentAmount, // coins_amount 记录调整的天机币数量（正数或负数）
+        'admin_adjustment', // item_type: 管理员调整（符合数据库约束）
+        transactionDescription,
+        operatorId, // 记录操作的管理员ID
+      ]
+    );
+
+    const transactionId = transactionResult.rows[0].id;
+
+    // 提交事务
+    await client.query('COMMIT');
+
+    console.log('✅ [adminAdjustCoins] 管理员调整天机币成功:', {
+      operatorId,
+      targetUserId,
+      adjustmentAmount,
+      oldBalance,
+      newBalance,
+      transactionId,
+      coinType,
+    });
 
     return {
       success: true,
-      message: data.message || '调整成功',
-      new_balance: data.new_balance,
-      transaction_id: data.transaction_id,
+      message: `调整成功：${oldBalance} → ${newBalance} (${adjustmentAmount > 0 ? '+' : ''}${adjustmentAmount})`,
+      new_balance: newBalance,
+      transaction_id: transactionId,
     };
   } catch (error: any) {
+    // 回滚事务
+    await client.query('ROLLBACK');
+    
     // 记录错误日志
-    console.error('管理员调整天机币失败:', {
+    console.error('❌ [adminAdjustCoins] 管理员调整天机币失败:', {
       operatorId,
       targetUserId,
       adjustmentAmount,
       coinType,
       reason,
       error: error.message,
+      stack: error.stack,
     });
 
     // 如果是已知错误，直接抛出
@@ -235,6 +308,9 @@ export async function adminAdjustCoins(
 
     // 其他错误，包装后抛出
     throw new Error(`调整操作失败: ${error.message || '未知错误'}`);
+  } finally {
+    // 释放连接
+    client.release();
   }
 }
 

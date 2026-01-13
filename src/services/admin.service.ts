@@ -373,6 +373,12 @@ export async function updateUserTier(
   userId: string,
   tier: string
 ): Promise<void> {
+  console.log('🔍 [updateUserTier Service] 开始处理，参数:', {
+    operatorId,
+    userId,
+    tier,
+  });
+
   // 参数验证
   if (!userId || !tier) {
     throw new Error('参数错误：用户ID和等级必须有效');
@@ -387,23 +393,113 @@ export async function updateUserTier(
     throw new Error(`参数错误：等级必须是以下之一：${validTiers.join(', ')}`);
   }
 
-  // 检查用户是否存在
-  const userCheck = await pool.query(
-    'SELECT id FROM public.profiles WHERE id = $1',
-    [userId]
-  );
+  // 获取数据库连接（用于事务）
+  const client = await pool.connect();
 
-  if (userCheck.rows.length === 0) {
-    throw new Error('用户不存在');
+  try {
+    // 开始事务
+    await client.query('BEGIN');
+
+    // 1. 检查用户是否存在
+    const userCheck = await client.query(
+      'SELECT id, tier FROM public.profiles WHERE id = $1',
+      [userId]
+    );
+
+    if (userCheck.rows.length === 0) {
+      await client.query('ROLLBACK');
+      throw new Error('用户不存在');
+    }
+
+    const oldTier = userCheck.rows[0].tier;
+    console.log('🔍 [updateUserTier Service] 用户当前等级:', oldTier, '-> 新等级:', tierLower);
+
+    // 2. 更新用户档案 (profiles 表)
+    await client.query(
+      `UPDATE public.profiles 
+       SET tier = $1, 
+           updated_at = NOW() 
+       WHERE id = $2`,
+      [tierLower, userId]
+    );
+
+    // 3. 🟢 关键修复：同步处理订阅表 (subscriptions 表)
+    const isFreeTier = tierLower === 'guest' || tierLower === 'explorer';
+    
+    if (isFreeTier) {
+      // ⬇️ 场景 A: 降级为免费等级
+      // 必须把当前的活跃订阅强制取消或标记为结束
+      const cancelResult = await client.query(
+        `UPDATE public.subscriptions 
+         SET status = 'cancelled', 
+             auto_renew = false,
+             updated_at = NOW() 
+         WHERE user_id = $1 AND status = 'active'
+         RETURNING id`,
+        [userId]
+      );
+
+      if (cancelResult.rows.length > 0) {
+        console.log('✅ [updateUserTier Service] 已取消活跃订阅:', {
+          userId,
+          cancelledSubscriptions: cancelResult.rows.length,
+        });
+      }
+    } else {
+      // ⬆️ 场景 B: 调整为其他付费等级 (如 basic -> premium)
+      // 检查是否有活跃订阅
+      const subRes = await client.query(
+        `SELECT id FROM public.subscriptions WHERE user_id = $1 AND status = 'active'`,
+        [userId]
+      );
+
+      if (subRes.rows.length > 0) {
+        // 如果有，更新它的等级
+        await client.query(
+          `UPDATE public.subscriptions 
+           SET tier = $1, updated_at = NOW() 
+           WHERE user_id = $2 AND status = 'active'`,
+          [tierLower, userId]
+        );
+        console.log('✅ [updateUserTier Service] 已更新活跃订阅等级:', {
+          userId,
+          newTier: tierLower,
+          updatedSubscriptions: subRes.rows.length,
+        });
+      } else {
+        // 如果没有活跃订阅但管理员强行设为付费会员，
+        // 仅更新 profile 即可，前端以 profile.tier 为准
+        console.log('ℹ️ [updateUserTier Service] 用户无活跃订阅，仅更新 profile.tier:', {
+          userId,
+          newTier: tierLower,
+        });
+      }
+    }
+
+    // 提交事务
+    await client.query('COMMIT');
+    console.log('✅ [updateUserTier Service] 用户等级更新成功:', {
+      userId,
+      oldTier,
+      newTier: tierLower,
+      operatorId,
+    });
+    
+  } catch (error: any) {
+    // 回滚事务
+    await client.query('ROLLBACK');
+    console.error('❌ [updateUserTier Service] 更新用户等级失败:', {
+      userId,
+      tier: tierLower,
+      operatorId,
+      error: error.message,
+      stack: error.stack,
+    });
+    throw error;
+  } finally {
+    // 释放连接
+    client.release();
   }
-
-  // 更新用户等级
-  await pool.query(
-    `UPDATE public.profiles 
-     SET tier = $1, updated_at = NOW()
-     WHERE id = $2`,
-    [tierLower, userId]
-  );
 }
 
 /**
@@ -529,6 +625,16 @@ export async function getCoinTransactions(
     status,
   } = params;
 
+  console.log('🔍 [getCoinTransactions Service] 开始处理，参数:', {
+    page,
+    pageSize,
+    userId,
+    startDate,
+    endDate,
+    type,
+    status,
+  });
+
   // 构建WHERE条件
   const conditions: string[] = [];
   const values: any[] = [];
@@ -543,9 +649,12 @@ export async function getCoinTransactions(
 
   // 用户ID筛选
   if (userId) {
+    console.log('🔍 [getCoinTransactions Service] 添加用户ID筛选条件:', userId);
     conditions.push(`t.user_id = $${paramIndex}`);
     values.push(userId);
     paramIndex++;
+  } else {
+    console.log('⚠️ [getCoinTransactions Service] 未提供用户ID，将查询所有用户的天机币交易');
   }
 
   // 日期范围筛选
@@ -615,8 +724,11 @@ export async function getCoinTransactions(
     ORDER BY t.created_at DESC
     LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
   `;
-  values.push(pageSize, offset);
-  const dataResult = await pool.query(dataQuery, values);
+  const dataValues = [...values, pageSize, offset];
+  console.log('🔍 [getCoinTransactions Service] 执行数据查询:', dataQuery);
+  console.log('🔍 [getCoinTransactions Service] 数据查询参数:', dataValues);
+  const dataResult = await pool.query(dataQuery, dataValues);
+  console.log('✅ [getCoinTransactions Service] 数据查询成功，返回', dataResult.rows.length, '条记录');
 
   return {
     data: dataResult.rows as CoinTransaction[],
