@@ -432,7 +432,9 @@ Content-Type: application/json
 **请求体**：
 ```typescript
 {
-  birthDate: string; // ISO 8601 日期字符串，如 "1990-01-15"
+  birthday: string; // ISO 8601 日期字符串，如 "1990-01-15"（推荐使用 birthday，与数据库字段名一致）
+  birthDate?: string; // 兼容字段（推荐使用 birthday）
+  birth_date?: string; // 兼容字段（推荐使用 birthday）
   birthTime?: string; // HH:mm 格式，如 "14:30"
   birthLocation?: string;
   gender?: 'male' | 'female';
@@ -476,7 +478,7 @@ Content-Type: application/json
 {
   success: false,
   error: 'INVALID_PARAMETER',
-  message: 'birthDate 格式错误，应为 YYYY-MM-DD 格式'
+  message: 'birthday 必须提供（支持 birthday、birthDate、birth_date）'
 }
 ```
 

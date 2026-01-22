@@ -402,7 +402,7 @@ router.get('/completeness', authenticateToken, getCompleteness);
  *           schema:
  *             type: object
  *             required:
- *               - birthDate
+ *               - birthday
  *             properties:
  *               birthDate:
  *                 type: string
@@ -449,7 +449,7 @@ router.get('/completeness', authenticateToken, getCompleteness);
  *                       type: string
  *                       example: 生辰信息已同步到命主名刺
  *       400:
- *         description: 参数错误（birthDate必填）或数据被锁定
+ *         description: 参数错误（birthday必填）或数据被锁定
  *         content:
  *           application/json:
  *             schema:

@@ -115,19 +115,23 @@ export async function syncBirthdayToContext(
     }
 
     const userId = req.user.userId;
-    const { birthDate, birthTime, birthLocation, gender } = req.body;
+    // 统一字段映射：支持 birthday（前端）、birthDate（camelCase）、birth_date（snake_case）
+    const birthday = req.body.birthday || req.body.birthDate || req.body.birth_date;
+    const birthTime = req.body.birthTime || req.body.birth_time;
+    const birthLocation = req.body.birthLocation || req.body.birth_location;
+    const gender = req.body.gender;
 
-    console.log('[syncBirthdayToContext Controller] 接收请求', { userId, birthDate, gender });
+    console.log('[syncBirthdayToContext Controller] 接收请求', { userId, birthday, gender });
 
-    if (!birthDate) {
-      console.log('[syncBirthdayToContext Controller] birthDate 缺失');
-      sendBadRequest(res, 'birthDate 必须提供');
+    if (!birthday) {
+      console.log('[syncBirthdayToContext Controller] birthday 缺失');
+      sendBadRequest(res, 'birthday 必须提供（支持 birthday、birthDate、birth_date）');
       return;
     }
 
     console.log('[syncBirthdayToContext Controller] 调用服务层');
     const result = await digitalTwinService.syncBirthdayToContext(userId, {
-      birthDate,
+      birthDate: birthday,
       birthTime,
       birthLocation,
       gender,
