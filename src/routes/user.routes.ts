@@ -404,10 +404,20 @@ router.get('/completeness', authenticateToken, getCompleteness);
  *             required:
  *               - birthday
  *             properties:
+ *               birthday:
+ *                 type: string
+ *                 format: date
+ *                 description: 出生日期，格式：YYYY-MM-DD（推荐使用 birthday，与数据库字段名一致）
+ *                 example: "1990-01-15"
  *               birthDate:
  *                 type: string
  *                 format: date
- *                 description: 出生日期，格式：YYYY-MM-DD
+ *                 description: 出生日期（兼容字段，推荐使用 birthday）
+ *                 example: "1990-01-15"
+ *               birth_date:
+ *                 type: string
+ *                 format: date
+ *                 description: 出生日期（兼容字段，推荐使用 birthday）
  *                 example: "1990-01-15"
  *               birthTime:
  *                 type: string
