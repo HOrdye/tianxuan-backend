@@ -77,7 +77,15 @@ export interface PaymentCallbackResult {
 // 文件位置：src/services/subscription.service.ts
 // ============================================================================
 
-export type Tier = 'free' | 'basic' | 'premium' | 'vip';
+/**
+ * 会员等级类型（按数据库实际值定义）
+ * - guest: 游客（未登录用户）
+ * - explorer: 探索者（登录注册但未付费的用户）
+ * - basic: 开悟者（基础会员）
+ * - premium: 天命师（高级会员）
+ * - vip: 玄机大师（VIP会员，待开发）
+ */
+export type Tier = 'guest' | 'explorer' | 'basic' | 'premium' | 'vip';
 
 export type SubscriptionStatus = 'active' | 'expired' | 'cancelled' | 'pending';
 

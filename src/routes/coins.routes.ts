@@ -4,6 +4,7 @@ import {
   getBalance,
   adminAdjustCoins,
   getCoinTransactions,
+  getRegistrationBonusStatus,
 } from '../controllers/coins.controller';
 import { authenticateToken } from '../middleware/auth.middleware';
 import { requireAdmin } from '../middleware/admin.middleware';
@@ -34,9 +35,14 @@ const router = Router();
  *   "message": "扣费成功",
  *   "data": {
  *     "remaining_balance": 90,
- *     "transaction_id": "uuid"
+ *     "transaction_id": null  // 扣费记录写入 quota_logs 表，不返回 transaction_id
  *   }
  * }
+ * 
+ * 注意：
+ * - 扣费记录写入 quota_logs 表（配额消耗日志），而不是 transactions 表（交易流水）
+ * - transactions 表用于记录交易流水（充值、订阅、管理员调整等）
+ * - quota_logs 表用于记录配额消耗（扣费）日志
  */
 router.post('/deduct', authenticateToken, deductCoins);
 
@@ -122,5 +128,22 @@ router.get('/transactions', authenticateToken, getCoinTransactions);
  * }
  */
 router.post('/admin/adjust', authenticateToken, requireAdmin, adminAdjustCoins);
+
+/**
+ * GET /api/coins/registration-bonus/status
+ * 查询注册奖励状态（需要认证）
+ * 
+ * 请求头：
+ * Authorization: Bearer <token>
+ * 
+ * 响应：
+ * {
+ *   "success": true,
+ *   "data": {
+ *     "granted": true  // 是否已发放注册奖励
+ *   }
+ * }
+ */
+router.get('/registration-bonus/status', authenticateToken, getRegistrationBonusStatus);
 
 export default router;

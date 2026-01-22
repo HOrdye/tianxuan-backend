@@ -100,7 +100,7 @@ router.get('/status', authenticateToken, getCheckInStatus);
  *         "check_in_date": "2025-01-08",
  *         "coins_earned": 10,
  *         "consecutive_days": 1,
- *         "tier": "free",
+ *         "tier": "explorer",
  *         "created_at": "2025-01-08T12:00:00Z"
  *       }
  *     ],
@@ -150,7 +150,7 @@ router.get('/history', authenticateToken, getCheckInLogs);
  * Authorization: Bearer <token>
  * 
  * 查询参数：
- * - new_tier: 新会员等级（必需，free/basic/premium/vip）
+ * - new_tier: 新会员等级（必需，guest/explorer/basic/premium/vip）
  * - upgrade_date: 升级日期（可选，YYYY-MM-DD格式，默认为今天）
  * 
  * 响应：
@@ -160,7 +160,7 @@ router.get('/history', authenticateToken, getCheckInLogs);
  *     "eligible_dates": [
  *       {
  *         "check_in_date": "2025-01-15",
- *         "old_tier": "free",
+ *         "old_tier": "explorer",
  *         "new_tier": "basic",
  *         "base_coins": 10,
  *         "expected_coins": 15,
@@ -183,7 +183,7 @@ router.get('/upgrade-bonus/calculate', authenticateToken, calculateUpgradeBonus)
  * 
  * 请求体：
  * {
- *   "new_tier": "basic",              // 新会员等级（必需，free/basic/premium/vip）
+ *   "new_tier": "basic",              // 新会员等级（必需，guest/explorer/basic/premium/vip）
  *   "upgrade_date": "2025-01-30"       // 升级日期（可选，YYYY-MM-DD格式，默认为今天）
  * }
  * 

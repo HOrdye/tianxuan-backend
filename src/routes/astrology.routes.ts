@@ -133,6 +133,7 @@ router.post('/time-assets/unlock', authenticateToken, unlockTimeAsset);
  * 
  * 查询参数：
  * - dimension: 维度（可选）
+ * - profileId / profile_id: 档案ID（可选，支持 camelCase 和 snake_case）
  * - limit: 返回记录数（可选，默认50，最大100）
  * - offset: 偏移量（可选，默认0）
  * 
@@ -174,8 +175,9 @@ router.get('/time-assets', authenticateToken, getUnlockedTimeAssets);
  * 
  * 查询参数：
  * - dimension: 维度（必需）
- * - period_start: 时间段开始日期（必需，YYYY-MM-DD）
- * - period_end: 时间段结束日期（必需，YYYY-MM-DD）
+ * - periodStart / period_start: 时间段开始日期（必需，YYYY-MM-DD，支持 camelCase 和 snake_case）
+ * - periodEnd / period_end: 时间段结束日期（必需，YYYY-MM-DD，支持 camelCase 和 snake_case）
+ * - profileId / profile_id: 档案ID（可选，支持 camelCase 和 snake_case，默认使用 userId）
  * 
  * 响应：
  * {

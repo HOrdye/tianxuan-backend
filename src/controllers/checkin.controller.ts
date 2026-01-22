@@ -1,5 +1,6 @@
 import { Response } from 'express';
 import * as checkinService from '../services/checkin.service';
+import { calculateCheckinReward, Tier } from '../services/checkin.service';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { sendSuccess, sendError, sendUnauthorized, sendBadRequest, sendNotFound, sendInternalError } from '../utils/response';
 
@@ -123,22 +124,19 @@ export async function getCheckInStatus(
     // ✅ 使用服务层返回的 can_check_in_today（已基于 check_in_logs 表计算）
     const canCheckIn = status.can_check_in_today;
     
-    // 计算今日奖励（根据用户等级和连续天数）
-    const tier = (status.tier || 'free').toLowerCase();
-    const tierRewards: Record<string, number> = {
-      'free': 10,
-      'guest': 10,
-      'explorer': 10,
-      'basic': 15,
-      'premium': 20,
-      'vip': 30,
-      'destiny_master': 20,
-      'celestial_master': 30,
-    };
-    const baseReward = tierRewards[tier] || 10;
+    // 计算今日奖励（根据用户等级和连续天数，使用7天循环奖励机制）
+    const tier = ((status.tier || 'explorer').toLowerCase() as Tier);
     const consecutiveDays = status.consecutive_check_in_days || 0;
-    const bonusReward = Math.floor(consecutiveDays / 7) * 10;
-    const todayReward = baseReward + bonusReward;
+    
+    // 如果今天已签到，使用实际获得的奖励；否则计算预期奖励
+    let todayReward: number;
+    if (status.today_coins_earned !== undefined) {
+      // 今天已签到，使用实际获得的奖励
+      todayReward = status.today_coins_earned;
+    } else {
+      // 今天未签到，计算预期奖励（使用当前连续天数+1，因为签到后连续天数会增加）
+      todayReward = calculateCheckinReward(tier, consecutiveDays + 1);
+    }
     
     // 返回签到状态（匹配前端期望格式）
     sendSuccess(

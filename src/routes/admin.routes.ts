@@ -10,7 +10,16 @@ const router = express.Router();
  * 所有路由都需要：
  * 1. 认证中间件（authenticateToken）
  * 2. 管理员权限检查（requireAdmin）
+ * 
+ * 例外：GET /api/admin/check 只需要认证，不需要管理员权限
  */
+
+// 管理员权限检查（不需要管理员权限，任何已登录用户都可以调用）
+router.get(
+  '/check',
+  authenticateToken,
+  adminController.checkAdminStatus
+);
 
 // 用户管理
 router.get(
@@ -39,6 +48,20 @@ router.put(
   authenticateToken,
   requireAdmin,
   adminController.adjustUserCoins
+);
+
+router.put(
+  '/users/:userId/coins/set',
+  authenticateToken,
+  requireAdmin,
+  adminController.setUserCoins
+);
+
+router.put(
+  '/users/:userId/role',
+  authenticateToken,
+  requireAdmin,
+  adminController.updateUserRole
 );
 
 // 交易流水查询

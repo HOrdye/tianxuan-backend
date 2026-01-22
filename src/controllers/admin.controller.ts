@@ -298,6 +298,131 @@ export async function adjustUserCoins(req: AuthRequest, res: Response): Promise<
 }
 
 /**
+ * 设置用户天机币余额（直接设置为指定值）
+ * PUT /api/admin/users/:userId/coins/set
+ * 支持设置储值余额，并可选择是否清零赠送余额
+ */
+export async function setUserCoins(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    const { userId } = req.params;
+    const { 
+      tianjiCoinsBalance, 
+      tianji_coins_balance,  // 兼容 snake_case
+      dailyCoinsGrant,
+      daily_coins_grant,  // 兼容 snake_case
+      activityCoinsGrant,
+      activity_coins_grant,  // 兼容 snake_case
+      clearGrants,
+      clear_grants,  // 兼容 snake_case
+      reason 
+    } = req.body;
+    
+    console.log('🔍 [setUserCoins] 收到请求:', {
+      userId,
+      body: req.body,
+    });
+
+    if (!userId) {
+      res.status(400).json({
+        success: false,
+        error: '参数错误',
+        message: '用户ID不能为空',
+      });
+      return;
+    }
+
+    // 支持 camelCase 和 snake_case 两种参数名
+    const finalTianjiBalance = tianjiCoinsBalance !== undefined ? tianjiCoinsBalance : tianji_coins_balance;
+    const finalDailyGrant = dailyCoinsGrant !== undefined ? dailyCoinsGrant : daily_coins_grant;
+    const finalActivityGrant = activityCoinsGrant !== undefined ? activityCoinsGrant : activity_coins_grant;
+    const finalClearGrants = clearGrants !== undefined ? clearGrants : clear_grants;
+
+    if (finalTianjiBalance === undefined || finalTianjiBalance === null) {
+      res.status(400).json({
+        success: false,
+        error: '参数错误',
+        message: '储值余额不能为空（参数名：tianjiCoinsBalance 或 tianji_coins_balance）',
+      });
+      return;
+    }
+
+    // 验证 tianjiCoinsBalance 是否为数字
+    if (typeof finalTianjiBalance !== 'number' || finalTianjiBalance < 0) {
+      res.status(400).json({
+        success: false,
+        error: '参数错误',
+        message: '储值余额必须是非负数',
+      });
+      return;
+    }
+
+    // 验证赠送余额参数（如果提供）
+    if (finalDailyGrant !== undefined && (typeof finalDailyGrant !== 'number' || finalDailyGrant < 0)) {
+      res.status(400).json({
+        success: false,
+        error: '参数错误',
+        message: '每日赠送余额必须是非负数',
+      });
+      return;
+    }
+
+    if (finalActivityGrant !== undefined && (typeof finalActivityGrant !== 'number' || finalActivityGrant < 0)) {
+      res.status(400).json({
+        success: false,
+        error: '参数错误',
+        message: '活动赠送余额必须是非负数',
+      });
+      return;
+    }
+
+    if (!req.user || !req.user.userId) {
+      res.status(401).json({
+        success: false,
+        error: '未认证',
+        message: '请先登录',
+      });
+      return;
+    }
+
+    console.log('✅ [setUserCoins] 参数验证通过，调用服务层');
+    // 🔧 修复：如果 clearGrants 未提供，传递 undefined 让服务层自动判断
+    // 如果只设置了储值余额，未设置赠送余额，服务层会自动清零赠送余额
+    const result = await adminService.setUserCoins(
+      req.user.userId,
+      userId,
+      finalTianjiBalance,
+      finalDailyGrant,
+      finalActivityGrant,
+      finalClearGrants,  // 可能是 undefined，让服务层自动判断
+      reason || '管理员设置余额'
+    );
+    console.log('✅ [setUserCoins] 服务层调用成功，结果:', result);
+
+    res.status(200).json({
+      success: true,
+      message: result.message || '天机币设置成功',
+      data: {
+        new_balance: result.new_balance,
+        transaction_id: result.transaction_id,
+      },
+    });
+  } catch (error: any) {
+    console.error('❌ [setUserCoins] 设置用户天机币失败:', error);
+    console.error('❌ [setUserCoins] 错误详情:', {
+      message: error.message,
+      stack: error.stack,
+      userId: req.params.userId,
+      body: req.body,
+    });
+    res.status(500).json({
+      success: false,
+      error: '设置用户天机币失败',
+      message: error.message || '未知错误',
+    });
+  }
+}
+
+/**
  * 更新用户角色
  * PUT /api/admin/users/:userId/role
  */

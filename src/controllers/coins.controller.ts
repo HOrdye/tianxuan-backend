@@ -1,6 +1,7 @@
 import { Response } from 'express';
 import * as coinsService from '../services/coins.service';
 import { AuthRequest } from '../middleware/auth.middleware';
+import { sendSuccess, sendError, sendUnauthorized, sendBadRequest, sendNotFound, sendInternalError } from '../utils/response';
 
 /**
  * 天机币控制器模块
@@ -26,23 +27,57 @@ export async function deductCoins(
     }
 
     const userId = req.user.userId;
-    const { featureType, price } = req.body;
+    
+    // 🐛 Debug: 记录接收到的请求数据
+    console.log('[deductCoins Controller] 接收到的请求数据:', JSON.stringify(req.body, null, 2));
+    console.log('[deductCoins Controller] 用户ID:', userId);
+    
+    // 支持 featureType (前端) 和 feature_type (后端) 两种参数名
+    const featureType = req.body.featureType !== undefined 
+      ? req.body.featureType 
+      : req.body.feature_type;
+    
+    // 支持 price (前端) 参数
+    const price = req.body.price;
 
     // 参数验证
     if (!featureType || typeof featureType !== 'string') {
+      console.error('[deductCoins Controller] 参数验证失败: featureType 缺失或类型错误', {
+        receivedFeatureType: req.body.featureType,
+        receivedFeature_type: req.body.feature_type,
+        body: req.body,
+      });
       res.status(400).json({
         success: false,
         error: '参数错误',
-        message: '功能类型 (featureType) 必须提供且为字符串',
+        message: '功能类型 (featureType 或 feature_type) 必须提供且为字符串',
       });
       return;
     }
 
-    if (!price || typeof price !== 'number' || price <= 0) {
+    if (price === undefined || price === null) {
+      console.error('[deductCoins Controller] 参数验证失败: price 缺失', {
+        receivedPrice: req.body.price,
+        body: req.body,
+      });
       res.status(400).json({
         success: false,
         error: '参数错误',
         message: '价格 (price) 必须提供且为正数',
+      });
+      return;
+    }
+
+    if (typeof price !== 'number' || price <= 0) {
+      console.error('[deductCoins Controller] 参数验证失败: price 类型错误或非正数', {
+        receivedPrice: req.body.price,
+        priceType: typeof price,
+        body: req.body,
+      });
+      res.status(400).json({
+        success: false,
+        error: '参数错误',
+        message: '价格 (price) 必须为正数',
       });
       return;
     }
@@ -307,5 +342,39 @@ export async function getCoinTransactions(
       error: '查询交易流水失败',
       message: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
+  }
+}
+
+/**
+ * 查询注册奖励状态控制器
+ * GET /api/coins/registration-bonus/status
+ */
+export async function getRegistrationBonusStatus(
+  req: AuthRequest,
+  res: Response
+): Promise<void> {
+  try {
+    // 检查认证
+    if (!req.user) {
+      sendUnauthorized(res);
+      return;
+    }
+
+    const userId = req.user.userId;
+
+    // 查询注册奖励状态
+    const status = await coinsService.getRegistrationBonusStatus(userId);
+
+    if (status === null) {
+      sendNotFound(res, '用户不存在');
+      return;
+    }
+
+    // 返回注册奖励状态
+    sendSuccess(res, status);
+  } catch (error: any) {
+    console.error('查询注册奖励状态失败:', error);
+
+    sendInternalError(res, '查询注册奖励状态失败', error);
   }
 }

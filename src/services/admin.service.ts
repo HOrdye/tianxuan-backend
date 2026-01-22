@@ -1,5 +1,5 @@
 import { pool } from '../config/database';
-import { adminAdjustCoins } from './coins.service';
+import { adminAdjustCoins, adminSetCoins } from './coins.service';
 
 /**
  * 管理员服务模块
@@ -603,6 +603,40 @@ export async function adjustUserCoins(
     adjustmentAmount,
     reason,
     coinType
+  );
+}
+
+/**
+ * 设置用户天机币余额（直接设置为指定值）
+ * 
+ * @param operatorId 操作人ID（管理员）
+ * @param userId 目标用户ID
+ * @param tianjiCoinsBalance 储值余额（必填）
+ * @param dailyCoinsGrant 每日赠送余额（可选，默认保持原值）
+ * @param activityCoinsGrant 活动赠送余额（可选，默认保持原值）
+ * @param clearGrants 是否清零赠送余额（可选，默认false）
+ * @param reason 设置原因（可选，默认为'管理员设置余额'）
+ * @returns Promise<{ success: boolean; message?: string; new_balance?: number }>
+ * 
+ * @throws Error 如果设置失败
+ */
+export async function setUserCoins(
+  operatorId: string,
+  userId: string,
+  tianjiCoinsBalance: number,
+  dailyCoinsGrant?: number,
+  activityCoinsGrant?: number,
+  clearGrants?: boolean,  // 改为可选，未提供时根据其他参数判断
+  reason: string = '管理员设置余额'
+): Promise<{ success: boolean; message?: string; new_balance?: number; transaction_id?: string }> {
+  return await adminSetCoins(
+    operatorId,
+    userId,
+    tianjiCoinsBalance,
+    dailyCoinsGrant,
+    activityCoinsGrant,
+    clearGrants,
+    reason
   );
 }
 

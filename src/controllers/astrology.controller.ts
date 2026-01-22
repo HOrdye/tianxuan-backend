@@ -1,6 +1,7 @@
 import { Response } from 'express';
 import * as astrologyService from '../services/astrology.service';
 import { AuthRequest } from '../middleware/auth.middleware';
+import { sendSuccess, sendError, sendUnauthorized, sendBadRequest, sendNotFound, sendInternalError } from '../utils/response';
 
 /**
  * 紫微斗数控制器模块
@@ -348,15 +349,22 @@ export async function getUnlockedTimeAssets(
   try {
     // 检查认证
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: '未认证',
-      });
+      sendUnauthorized(res);
       return;
     }
 
     const userId = req.user.userId;
-    const { dimension, limit, offset } = req.query;
+    // 🟢 修复：同时支持 camelCase 和 snake_case 参数名
+    const { 
+      dimension, 
+      limit, 
+      offset,
+      profileId,      // camelCase (前端)
+      profile_id,    // snake_case (后端)
+    } = req.query;
+
+    // 获取 profileId（优先使用 camelCase，兼容 snake_case）
+    const profileIdValue = (profileId as string) || (profile_id as string) || undefined;
 
     // 获取查询参数
     const limitNum = limit ? parseInt(limit as string, 10) : 50;
@@ -364,59 +372,40 @@ export async function getUnlockedTimeAssets(
 
     // 参数验证
     if (isNaN(limitNum) || limitNum < 1 || limitNum > 100) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: 'limit 必须在 1-100 之间',
-      });
+      sendBadRequest(res, 'limit 必须在 1-100 之间');
       return;
     }
 
     if (isNaN(offsetNum) || offsetNum < 0) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: 'offset 不能为负数',
-      });
+      sendBadRequest(res, 'offset 不能为负数');
       return;
     }
 
     // 查询已解锁的时空资产
     const assets = await astrologyService.getUnlockedTimeAssets(
       userId,
-      undefined, // profileId 可选
+      profileIdValue, // 🟢 修复：使用从查询参数中读取的 profileId
       dimension as string | undefined,
       limitNum,
       offsetNum
     );
 
-    // 返回结果
-    res.status(200).json({
-      success: true,
-      data: {
-        assets,
-        limit: limitNum,
-        offset: offsetNum,
-        count: assets.length,
-      },
+    // 返回结果（使用统一响应格式）
+    sendSuccess(res, {
+      assets,
+      limit: limitNum,
+      offset: offsetNum,
+      count: assets.length,
     });
   } catch (error: any) {
     console.error('查询已解锁时空资产失败:', error);
 
     if (error.message?.includes('参数错误')) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: error.message,
-      });
+      sendBadRequest(res, error.message);
       return;
     }
 
-    res.status(500).json({
-      success: false,
-      error: '查询已解锁时空资产失败',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, '查询已解锁时空资产失败', error);
   }
 }
 
@@ -431,59 +420,55 @@ export async function isTimeAssetUnlocked(
   try {
     // 检查认证
     if (!req.user) {
-      res.status(401).json({
-        success: false,
-        error: '未认证',
-      });
+      sendUnauthorized(res);
       return;
     }
 
     const userId = req.user.userId;
-    const { dimension, period_start, period_end } = req.query;
+    // 🟢 修复：同时支持 camelCase 和 snake_case 参数名
+    const { 
+      dimension, 
+      period_start,      // snake_case
+      periodStart,       // camelCase (前端)
+      period_end,        // snake_case
+      periodEnd,         // camelCase (前端)
+      profileId,         // camelCase (前端)
+      profile_id,        // snake_case (后端)
+    } = req.query;
+
+    // 获取参数（优先使用 camelCase，兼容 snake_case）
+    const periodStartValue = (periodStart as string) || (period_start as string);
+    const periodEndValue = (periodEnd as string) || (period_end as string);
+    const profileIdValue = (profileId as string) || (profile_id as string) || userId; // 默认使用 userId
 
     // 参数验证
-    if (!dimension || !period_start || !period_end) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: '维度、时间段开始日期和结束日期必须提供',
-      });
+    if (!dimension || !periodStartValue || !periodEndValue) {
+      sendBadRequest(res, '维度、时间段开始日期和结束日期必须提供');
       return;
     }
 
     // 检查是否已解锁
     const isUnlocked = await astrologyService.isTimeAssetUnlocked(
       userId,
-      userId, // profile_id 使用 userId
+      profileIdValue, // 🟢 修复：使用从查询参数中读取的 profileId，或默认使用 userId
       dimension as string,
-      period_start as string,
-      period_end as string
+      periodStartValue,
+      periodEndValue
     );
 
-    // 返回结果
-    res.status(200).json({
-      success: true,
-      data: {
-        is_unlocked: isUnlocked,
-      },
+    // 返回结果（使用统一响应格式）
+    sendSuccess(res, {
+      is_unlocked: isUnlocked,
     });
   } catch (error: any) {
     console.error('检查时空资产解锁状态失败:', error);
 
     if (error.message?.includes('参数错误')) {
-      res.status(400).json({
-        success: false,
-        error: '参数错误',
-        message: error.message,
-      });
+      sendBadRequest(res, error.message);
       return;
     }
 
-    res.status(500).json({
-      success: false,
-      error: '检查时空资产解锁状态失败',
-      message: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    sendInternalError(res, '检查时空资产解锁状态失败', error);
   }
 }
 

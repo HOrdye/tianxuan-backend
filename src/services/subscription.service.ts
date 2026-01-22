@@ -7,9 +7,14 @@ import { randomUUID } from 'crypto';
  */
 
 /**
- * 会员等级类型
+ * 会员等级类型（按数据库实际值定义）
+ * - guest: 游客（未登录用户）
+ * - explorer: 探索者（登录注册但未付费的用户）
+ * - basic: 开悟者（基础会员）
+ * - premium: 天命师（高级会员）
+ * - vip: 玄机大师（VIP会员，待开发）
  */
-export type Tier = 'free' | 'basic' | 'premium' | 'vip';
+export type Tier = 'guest' | 'explorer' | 'basic' | 'premium' | 'vip';
 
 /**
  * 订阅状态类型
@@ -62,12 +67,33 @@ export interface UsageResult {
 }
 
 /**
- * 四级会员体系功能权限配置
+ * 五级会员体系功能权限配置
  * 参考前端 subscriptionService.ts 中的 PLANS 配置
  */
 const TIER_FEATURES: Record<Tier, Record<string, any>> = {
-  // 免费用户（探索者）
-  free: {
+  // 游客（未登录用户）
+  guest: {
+    yijing: {
+      available: false, // 游客无法使用
+    },
+    ziwei: {
+      available: false,
+    },
+    bazi: {
+      available: false,
+    },
+    qimen: {
+      available: false,
+    },
+    liuyao: {
+      available: false,
+    },
+    astrology: {
+      available: false,
+    },
+  },
+  // 探索者（登录注册但未付费的用户）
+  explorer: {
     yijing: {
       available: true,
       dailyLimit: 3, // 每日3次
@@ -151,11 +177,11 @@ const TIER_FEATURES: Record<Tier, Record<string, any>> = {
       cache: true,
     },
   },
-  // VIP会员（玄机大师）
+  // VIP会员（玄机大师）- 待开发
   vip: {
     yijing: {
       available: true,
-      dailyLimit: 0,
+      dailyLimit: 0, // 0表示无限
     },
     ziwei: {
       available: true,
@@ -180,6 +206,7 @@ const TIER_FEATURES: Record<Tier, Record<string, any>> = {
       timeAssets: true,
       cache: true,
     },
+    // ⚠️ 待开发：VIP会员的完整功能权限配置
   },
 };
 
@@ -211,27 +238,24 @@ export async function getSubscriptionStatus(
     }
 
     const profile = profileResult.rows[0];
-    let tier: Tier = 'free';
+    let tier: Tier = 'explorer'; // 默认值改为 explorer（登录注册但未付费的用户）
     let status: SubscriptionStatus = 'active';
     let expiresAt: Date | null = null;
 
-    // 🟢 修复：处理 tier 值映射（数据库可能使用 'guest' 或 'explorer'，需要映射到 'free'）
-    // 如果 profiles.tier 存在，使用它（需要映射到有效的 Tier 类型）
+    // 如果 profiles.tier 存在，直接使用数据库值（不再映射）
     if (profile.tier) {
       const dbTier = profile.tier.toLowerCase();
-      // 映射数据库 tier 值到代码中的 Tier 类型
-      if (dbTier === 'guest' || dbTier === 'explorer') {
-        tier = 'free';
-      } else if (['free', 'basic', 'premium', 'vip'].includes(dbTier)) {
+      // 直接使用数据库值，验证是否为有效的 Tier 类型
+      const validTiers: Tier[] = ['guest', 'explorer', 'basic', 'premium', 'vip'];
+      if (validTiers.includes(dbTier as Tier)) {
         tier = dbTier as Tier;
       } else {
-        // 未知的 tier 值，默认使用 'free'
-        console.warn(`未知的 tier 值: ${profile.tier}，使用默认值 'free'`);
-        tier = 'free';
+        // 未知的 tier 值，默认使用 'explorer'
+        console.warn(`未知的 tier 值: ${profile.tier}，使用默认值 'explorer'`);
+        tier = 'explorer';
       }
       
-      // 🟢 关键修复：如果 profiles.tier 不正确（如 'guest'），从 subscriptions 表读取正确的 tier
-      // 查询 subscriptions 表获取正确的 tier（优先使用 subscriptions 表的 tier）
+      // 查询 subscriptions 表获取订阅信息（优先使用 subscriptions 表的 tier）
       const subscriptionCheck = await pool.query(
         `SELECT tier, status, expires_at 
          FROM public.subscriptions 
@@ -246,7 +270,7 @@ export async function getSubscriptionStatus(
         const sub = subscriptionCheck.rows[0];
         const subTier = sub.tier?.toLowerCase();
         // 使用 subscriptions 表的 tier（更准确）
-        if (['free', 'basic', 'premium', 'vip'].includes(subTier)) {
+        if (validTiers.includes(subTier as Tier)) {
           tier = subTier as Tier;
         }
         expiresAt = sub.expires_at || profile.subscription_end_at;
@@ -260,11 +284,11 @@ export async function getSubscriptionStatus(
       if (expiresAt) {
         const now = new Date();
         if (expiresAt < now) {
-          // 🟢 只有真正过期时，才降级为免费用户
+          // 过期后降级为 explorer（登录注册但未付费的用户）
           status = 'expired';
-          tier = 'free'; // 过期后降级为免费用户
+          tier = 'explorer';
         } else {
-          // 🟢 关键修复：即使 subscription_status = 'cancelled'，只要还没过期，tier 保持不变
+          // 即使 subscription_status = 'cancelled'，只要还没过期，tier 保持不变
           // 取消订阅 ≠ 立即终止权益，权益保留到 expires_at
           if (!subscriptionCheck.rows.length) {
             status = (profile.subscription_status || 'active') as SubscriptionStatus;
@@ -279,8 +303,6 @@ export async function getSubscriptionStatus(
       }
     } else {
       // 2. 如果 profiles.tier 不存在，查询 subscriptions 表
-      // ✅ 数据库表结构已修复：可以使用 expires_at 字段
-      // 🟢 修复：也查询 'cancelled' 状态的订阅（可能已取消但还没过期）
       const subscriptionResult = await pool.query(
         `SELECT tier, status, expires_at 
          FROM public.subscriptions 
@@ -294,29 +316,28 @@ export async function getSubscriptionStatus(
       if (subscriptionResult.rows.length > 0) {
         const sub = subscriptionResult.rows[0];
         const dbTier = sub.tier?.toLowerCase();
-        // 映射数据库 tier 值到代码中的 Tier 类型
-        if (dbTier === 'guest' || dbTier === 'explorer') {
-          tier = 'free';
-        } else if (['free', 'basic', 'premium', 'vip'].includes(dbTier)) {
+        // 直接使用数据库值
+        const validTiers: Tier[] = ['guest', 'explorer', 'basic', 'premium', 'vip'];
+        if (validTiers.includes(dbTier as Tier)) {
           tier = dbTier as Tier;
         } else {
-          tier = 'free';
+          tier = 'explorer';
         }
         status = sub.status as SubscriptionStatus;
         expiresAt = sub.expires_at;
         
         // 检查是否过期
         if (expiresAt && expiresAt < new Date()) {
-          // 只有真正过期时，才降级为免费用户
+          // 过期后降级为 explorer（登录注册但未付费的用户）
           status = 'expired';
-          tier = 'free';
+          tier = 'explorer';
         }
         // 🟢 关键：如果 status = 'cancelled' 但还没过期，tier 保持不变
       }
     }
 
     // 获取功能权限配置
-    const features = TIER_FEATURES[tier] || TIER_FEATURES.free;
+    const features = TIER_FEATURES[tier] || TIER_FEATURES.explorer;
     const isPremium = tier === 'premium' || tier === 'vip';
 
     return {
@@ -356,13 +377,14 @@ export async function createSubscription(
   }
 
   // 验证会员等级
-  if (!['free', 'basic', 'premium', 'vip'].includes(tier)) {
-    throw new Error('参数错误：会员等级无效');
+  const validTiers: Tier[] = ['guest', 'explorer', 'basic', 'premium', 'vip'];
+  if (!validTiers.includes(tier)) {
+    throw new Error(`参数错误：会员等级无效，必须是以下之一：${validTiers.join(', ')}`);
   }
 
-  // 免费用户不能订阅
-  if (tier === 'free') {
-    throw new Error('不能订阅免费等级');
+  // guest 和 explorer 不能创建订阅（需要先注册/登录）
+  if (tier === 'guest' || tier === 'explorer') {
+    throw new Error('游客和探索者不能创建订阅，请先升级到付费会员');
   }
 
   try {
@@ -374,10 +396,11 @@ export async function createSubscription(
       // 1. 计算订阅价格（这里需要根据实际业务逻辑计算）
       // 示例：basic 月付 29元，年付 290元；premium 月付 99元，年付 990元；vip 月付 199元，年付 1990元
       const prices: Record<Tier, { monthly: number; yearly: number }> = {
-        free: { monthly: 0, yearly: 0 },
+        guest: { monthly: 0, yearly: 0 },      // 游客无法订阅
+        explorer: { monthly: 0, yearly: 0 },   // 探索者无法订阅
         basic: { monthly: 29, yearly: 290 },
         premium: { monthly: 99, yearly: 990 },
-        vip: { monthly: 199, yearly: 1990 },
+        vip: { monthly: 199, yearly: 1990 },  // VIP会员（待开发）
       };
 
       const price = isYearly ? prices[tier].yearly : prices[tier].monthly;
@@ -514,7 +537,7 @@ export async function checkSubscriptionStatus(
 
     return {
       success: false,
-      tier: 'free',
+      tier: 'explorer',
       status: 'pending',
     };
   } catch (error: any) {
@@ -663,13 +686,13 @@ export async function cancelSubscription(
     );
 
     // 5. 🟢 关键修复：更新 profiles 表
-    // ❌ 绝对不要把 tier 改成 'free'！
+    // ❌ 绝对不要把 tier 改成 'explorer'（取消订阅不等于降级）！
     // ✅ 只更新 subscription_status 状态，保留 tier 和过期时间
     await client.query(
       `UPDATE public.profiles 
        SET subscription_status = 'cancelled',
            updated_at = NOW()
-       -- 注意：这里不要写 tier = 'free'，也不要清空 subscription_end_at
+       -- 注意：这里不要写 tier = 'explorer'，也不要清空 subscription_end_at
        WHERE id = $1`,
       [userId]
     );
@@ -802,7 +825,7 @@ export async function checkFeaturePermission(
  * 获取升级建议等级
  */
 function getUpgradeTier(currentTier: Tier): Tier {
-  const tierOrder: Tier[] = ['free', 'basic', 'premium', 'vip'];
+  const tierOrder: Tier[] = ['guest', 'explorer', 'basic', 'premium', 'vip'];
   const currentIndex = tierOrder.indexOf(currentTier);
   
   if (currentIndex < tierOrder.length - 1) {
@@ -999,9 +1022,9 @@ export async function checkExpiredSubscription(
       );
 
       if (subscriptionResult.rows.length === 0) {
-        // 没有订阅，返回免费用户
+        // 没有订阅，返回 explorer（登录注册但未付费的用户）
         await client.query('COMMIT');
-        return { expired: false, newTier: 'free' };
+        return { expired: false, newTier: 'explorer' };
       }
 
       const subscription = subscriptionResult.rows[0];
@@ -1018,10 +1041,10 @@ export async function checkExpiredSubscription(
           [subscription.id]
         );
 
-        // 更新 profiles.tier 为免费用户
+        // 更新 profiles.tier 为 explorer（登录注册但未付费的用户）
         await client.query(
           `UPDATE public.profiles 
-           SET tier = 'free', 
+           SET tier = 'explorer', 
                subscription_status = 'expired',
                subscription_end_at = NULL,
                updated_at = NOW()
@@ -1030,7 +1053,7 @@ export async function checkExpiredSubscription(
         );
 
         await client.query('COMMIT');
-        return { expired: true, newTier: 'free' };
+        return { expired: true, newTier: 'explorer' };
       }
 
       await client.query('COMMIT');

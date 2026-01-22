@@ -119,7 +119,7 @@ export async function getUserTier(
 
     // 返回用户等级
     sendSuccess(res, {
-      tier: tier || 'free', // 默认为 free
+      tier: tier || 'explorer', // 默认为 explorer（登录注册但未付费的用户）
     });
   } catch (error: any) {
     console.error('获取用户等级失败:', error);

@@ -6,6 +6,71 @@ import { pool } from '../config/database';
  */
 
 /**
+ * 会员等级类型（与数据库实际值一致）
+ */
+export type Tier = 'guest' | 'explorer' | 'basic' | 'premium' | 'vip';
+
+/**
+ * 签到奖励配置表（7天循环奖励机制）
+ * 根据连续签到天数（1-7循环）从奖励表中取值
+ * 数组索引对应：第1天=索引0，第2天=索引1，...，第7天=索引6
+ */
+const REWARD_TABLE: Record<Tier, number[]> = {
+  guest: [0, 0, 0, 0, 0, 0, 0],           // 游客：0 天机币（无法签到）
+  explorer: [2, 3, 3, 4, 4, 5, 5],        // 探索者：平均3.4币/天
+  basic: [45, 48, 50, 52, 55, 58, 70],    // 开悟者：平均54币/天
+  premium: [500, 500, 500, 500, 500, 500, 600], // 天命师：平均514币/天
+  vip: [500, 500, 500, 500, 500, 500, 600],     // 玄机大师：与天命师相同（待开发）
+};
+
+/**
+ * 计算签到奖励（根据会员等级和连续签到天数，使用7天循环机制）
+ * 
+ * @param tier 会员等级
+ * @param consecutiveDays 连续签到天数
+ * @returns 奖励金额
+ */
+export function calculateCheckinReward(tier: Tier, consecutiveDays: number): number {
+  // 确保等级有效，默认为 explorer
+  const validTiers: Tier[] = ['guest', 'explorer', 'basic', 'premium', 'vip'];
+  const validTier = (validTiers.includes(tier) 
+    ? tier 
+    : 'explorer') as Tier;
+  
+  // ✅ 调试日志：如果等级无效，记录警告
+  if (!validTiers.includes(tier)) {
+    console.warn('[签到奖励计算] 无效的等级值:', {
+      tier,
+      validTier,
+      consecutiveDays,
+    });
+  }
+  
+  // 获取该等级的奖励表
+  const rewardTable = REWARD_TABLE[validTier];
+  
+  // 计算7天循环中的位置（1-7天对应索引0-6）
+  // 连续天数对7取模，得到0-6的索引
+  // 如果连续天数为0，使用第1天的奖励（索引0）
+  const dayIndex = consecutiveDays > 0 ? ((consecutiveDays - 1) % 7) : 0;
+  
+  // 从奖励表中获取对应天数的奖励
+  const reward = rewardTable[dayIndex];
+  
+  // ✅ 调试日志：记录奖励计算详情
+  console.log('[签到奖励计算] 奖励计算详情:', {
+    tier,
+    validTier,
+    consecutiveDays,
+    dayIndex: dayIndex + 1, // 显示为第几天（1-7）
+    reward,
+    rewardTable,
+  });
+  
+  return reward;
+}
+
+/**
  * 获取服务器本地时区的当前日期字符串
  * 使用服务器本地时区的今天日期（YYYY-MM-DD格式）
  * 
@@ -72,6 +137,7 @@ export interface CheckInStatus {
   can_check_in_today: boolean;
   today_date: string;
   tier?: string; // 用户等级
+  today_coins_earned?: number; // 今天已获得的奖励（如果今天已签到）
 }
 
 /**
@@ -89,11 +155,12 @@ export async function dailyCheckIn(userId: string): Promise<CheckInResult> {
   }
 
   try {
-    // 1. 先查询用户是否存在
+    // 1. 先查询用户是否存在，并获取用户等级
     const profileResult = await pool.query(
       `SELECT 
         last_check_in_date,
-        consecutive_check_in_days
+        consecutive_check_in_days,
+        tier
       FROM public.profiles
       WHERE id = $1`,
       [userId]
@@ -104,6 +171,42 @@ export async function dailyCheckIn(userId: string): Promise<CheckInResult> {
     }
 
     const profile = profileResult.rows[0];
+    
+    // 获取用户等级，默认为 explorer
+    const rawTier = profile.tier;
+    const validTiers: Tier[] = ['guest', 'explorer', 'basic', 'premium', 'vip'];
+    
+    // ✅ 处理tier值：确保正确识别用户等级
+    let userTier: Tier = 'explorer'; // 默认值
+    
+    if (rawTier) {
+      const tierLower = rawTier.toLowerCase().trim();
+      if (validTiers.includes(tierLower as Tier)) {
+        userTier = tierLower as Tier;
+      } else {
+        // 如果tier值不在有效列表中，记录警告
+        console.warn('[签到服务] 无效的tier值:', {
+          userId,
+          rawTier,
+          tierLower,
+          '使用默认值explorer': true,
+        });
+      }
+    } else {
+      // 如果tier为null或undefined，使用默认值
+      console.warn('[签到服务] tier值为空，使用默认值explorer:', {
+        userId,
+        rawTier,
+      });
+    }
+    
+    // ✅ 调试日志：记录用户等级信息
+    console.log('[签到服务] 用户等级信息:', {
+      userId,
+      rawTier,
+      userTier,
+      isValidTier: validTiers.includes(userTier),
+    });
     
     // 2. ✅ 使用 PostgreSQL 的 CURRENT_DATE 函数（服务器本地时区）
     // 这样无论服务器在哪个时区，都会使用数据库服务器的时区设置
@@ -157,12 +260,16 @@ export async function dailyCheckIn(userId: string): Promise<CheckInResult> {
       // 否则重置为1（已经设置）
     }
 
-    // 4. 计算奖励（根据连续天数，可以自定义奖励规则）
-    // 基础奖励：10 天机币
-    // 连续签到奖励：每连续7天额外奖励10天机币
-    const baseReward = 10;
-    const bonusReward = Math.floor(consecutiveDays / 7) * 10;
-    const totalReward = baseReward + bonusReward;
+    // 4. 计算奖励（根据用户等级和连续签到天数，使用7天循环奖励机制）
+    const totalReward = calculateCheckinReward(userTier, consecutiveDays);
+    
+    // ✅ 调试日志：记录最终奖励
+    console.log('[签到服务] 最终奖励计算:', {
+      userId,
+      userTier,
+      consecutiveDays,
+      totalReward,
+    });
 
     // 5. 调用数据库函数 handle_daily_check_in
     // 函数签名: handle_daily_check_in(p_user_id uuid, p_coins integer, p_consecutive_days integer, p_date date)
@@ -254,6 +361,7 @@ export async function getCheckInStatus(userId: string): Promise<CheckInStatus | 
 
     // 4. 判断今天是否已签到（以 check_in_logs 表为准）
     const hasCheckedInToday = todayCheckInResult.rows.length > 0;
+    const todayCoinsEarned = hasCheckedInToday ? todayCheckInResult.rows[0].coins_earned : undefined;
     
     // 5. 获取最后一次签到日期（从 check_in_logs 表获取，更准确）
     let lastCheckInDate: string | null = null;
@@ -287,7 +395,8 @@ export async function getCheckInStatus(userId: string): Promise<CheckInStatus | 
       consecutive_check_in_days: profile.consecutive_check_in_days || 0,
       can_check_in_today: !hasCheckedInToday, // ✅ 以 check_in_logs 表为准
       today_date: todayStr, // ✅ 返回北京时间日期
-      tier: profile.tier || 'free',
+      tier: profile.tier || 'explorer',
+      today_coins_earned: todayCoinsEarned, // 今天已获得的奖励（如果今天已签到）
     };
   } catch (error: any) {
     console.error('查询签到状态失败:', {

@@ -1,38 +1,10 @@
 import { pool } from '../config/database';
+import { calculateCheckinReward, Tier } from './checkin.service';
 
 /**
  * 签到升级补差服务模块
  * 提供升级补差计算和发放功能
  */
-
-/**
- * 会员等级类型
- */
-export type Tier = 'free' | 'basic' | 'premium' | 'vip';
-
-/**
- * 签到奖励配置（不同会员等级的基础奖励）
- */
-const TIER_CHECKIN_REWARDS: Record<Tier, number> = {
-  free: 10,      // 免费用户：10 天机币
-  basic: 15,     // 基础会员：15 天机币
-  premium: 20,   // 高级会员：20 天机币
-  vip: 30,       // VIP会员：30 天机币
-};
-
-/**
- * 计算签到奖励（根据会员等级和连续天数）
- * 
- * @param tier 会员等级
- * @param consecutiveDays 连续签到天数
- * @returns 总奖励金额
- */
-function calculateCheckinReward(tier: Tier, consecutiveDays: number): number {
-  const baseReward = TIER_CHECKIN_REWARDS[tier] || TIER_CHECKIN_REWARDS.free;
-  // 连续签到奖励：每连续7天额外奖励10天机币
-  const bonusReward = Math.floor(consecutiveDays / 7) * 10;
-  return baseReward + bonusReward;
-}
 
 /**
  * 升级补差计算结果接口
@@ -79,8 +51,9 @@ export async function calculateUpgradeBonus(
     throw new Error('参数错误：用户ID和新会员等级必须有效');
   }
 
-  if (!['free', 'basic', 'premium', 'vip'].includes(newTier)) {
-    throw new Error('参数错误：无效的会员等级');
+  const validTiers: Tier[] = ['guest', 'explorer', 'basic', 'premium', 'vip'];
+  if (!validTiers.includes(newTier)) {
+    throw new Error(`参数错误：无效的会员等级，必须是以下之一：${validTiers.join(', ')}`);
   }
 
   const upgradeDateStr = upgradeDate || new Date().toISOString().split('T')[0];
@@ -96,10 +69,10 @@ export async function calculateUpgradeBonus(
       throw new Error('用户不存在');
     }
 
-    const oldTier = (profileResult.rows[0].tier || 'free').toLowerCase() as Tier;
+    const oldTier = (profileResult.rows[0].tier || 'explorer').toLowerCase() as Tier;
 
     // 如果新等级不高于旧等级，无需补差
-    const tierOrder: Record<Tier, number> = { free: 0, basic: 1, premium: 2, vip: 3 };
+    const tierOrder: Record<Tier, number> = { guest: 0, explorer: 1, basic: 2, premium: 3, vip: 4 };
     if (tierOrder[newTier] <= tierOrder[oldTier]) {
       return {
         eligible_dates: [],
@@ -186,8 +159,9 @@ export async function grantUpgradeBonus(
     throw new Error('参数错误：用户ID和新会员等级必须有效');
   }
 
-  if (!['free', 'basic', 'premium', 'vip'].includes(newTier)) {
-    throw new Error('参数错误：无效的会员等级');
+  const validTiers: Tier[] = ['guest', 'explorer', 'basic', 'premium', 'vip'];
+  if (!validTiers.includes(newTier)) {
+    throw new Error(`参数错误：无效的会员等级，必须是以下之一：${validTiers.join(', ')}`);
   }
 
   const upgradeDateStr = upgradeDate || new Date().toISOString().split('T')[0];

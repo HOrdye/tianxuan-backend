@@ -1,4 +1,5 @@
 import { pool } from '../config/database';
+import { calculateCompleteness } from './user-digital-twin.service';
 
 /**
  * 用户资料服务模块
@@ -167,7 +168,7 @@ export async function getProfile(
   const result = await pool.query(
     `SELECT 
       id, email, username, avatar_url, bio, location, birthday, gender,
-      phone, website, preferences, role, tier, subscription_status,
+      phone, website, preferences, implicit_traits, role, tier, subscription_status,
       subscription_end_at, tianji_coins_balance, daily_coins_grant,
       activity_coins_grant, daily_coins_grant_expires_at,
       activity_coins_grant_expires_at, last_coins_reset_at,
@@ -184,12 +185,24 @@ export async function getProfile(
 
   const profile = result.rows[0] as Profile;
   
+  // 计算完整度
+  const preferences = profile.preferences || {};
+  const userContext = preferences.userContext || {};
+  const completeness = calculateCompleteness(userContext, profile.birthday);
+  
   // 如果要求转换为前端格式，则转换
   if (formatForFrontend) {
-    return formatProfileForFrontend(profile);
+    const formatted = formatProfileForFrontend(profile);
+    return {
+      ...formatted,
+      completeness,
+    } as any;
   }
   
-  return profile;
+  return {
+    ...profile,
+    completeness,
+  } as any;
 }
 
 /**
@@ -296,9 +309,16 @@ export async function updateProfile(
 
     // ✅ 字段在白名单中，可以安全更新
     if (key === 'preferences' && typeof value === 'object') {
+      // 🛡️ 安全过滤：禁止用户更新 implicit_traits
+      const sanitizedPreferences = { ...value };
+      if (sanitizedPreferences.implicit_traits !== undefined) {
+        delete sanitizedPreferences.implicit_traits;
+        console.warn(`[安全警告] 用户尝试更新 implicit_traits，已过滤`);
+      }
+      
       // preferences 是 JSONB，需要转换为 JSON 字符串
       updateFields.push(`${key} = $${paramIndex}`);
-      values.push(JSON.stringify(value));
+      values.push(JSON.stringify(sanitizedPreferences));
     } else {
       updateFields.push(`${key} = $${paramIndex}`);
       values.push(value);
@@ -355,12 +375,24 @@ export async function updateProfile(
     username: updatedProfile.username,
   });
   
+  // 计算完整度
+  const preferences = updatedProfile.preferences || {};
+  const userContext = preferences.userContext || {};
+  const completeness = calculateCompleteness(userContext, updatedProfile.birthday);
+  
   // 如果要求转换为前端格式，则转换
   if (formatForFrontend) {
-    return formatProfileForFrontend(updatedProfile);
+    const formatted = formatProfileForFrontend(updatedProfile);
+    return {
+      ...formatted,
+      completeness,
+    } as any;
   }
   
-  return updatedProfile;
+  return {
+    ...updatedProfile,
+    completeness,
+  } as any;
 }
 
 /**

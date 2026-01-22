@@ -29,7 +29,7 @@ const router = Router();
  * {
  *   "success": true,
  *   "data": {
- *     "tier": "free" | "basic" | "premium" | "vip",
+ *     "tier": "guest" | "explorer" | "basic" | "premium" | "vip",
  *     "status": "active" | "expired" | "cancelled" | "pending",
  *     "expiresAt": "2025-12-31T23:59:59Z" | null,
  *     "features": { ... },

@@ -1271,6 +1271,11 @@ export interface CreateServiceRefundParams {
   reason: string;  // 退款原因
   originalDeduction: number;  // 原始扣费金额（用于记录）
   originalRequestId: string;  // 原始请求ID（交易ID）
+  deduction?: {
+    daily_coins_grant?: number;  // 每日赠送余额扣费金额（用于精确退款）
+    activity_coins_grant?: number;  // 活动赠送余额扣费金额（用于精确退款）
+    tianji_coins_balance?: number;  // 储值余额扣费金额（用于精确退款）
+  };
 }
 
 /**
@@ -1424,7 +1429,7 @@ export async function createOrderRefundLog(
 export async function createServiceRefundLog(
   params: CreateServiceRefundParams
 ): Promise<RefundLog> {
-  const { userId, amount, reason, originalDeduction, originalRequestId } = params;
+  const { userId, amount, reason, originalDeduction, originalRequestId, deduction } = params;
 
   // 参数验证
   if (!userId) {
@@ -1435,12 +1440,39 @@ export async function createServiceRefundLog(
     throw new Error('参数错误：退款天机币数量必须大于0');
   }
 
-  if (!originalRequestId || typeof originalRequestId !== 'string') {
-    throw new Error('参数错误：原始请求ID必须有效');
-  }
+  // originalRequestId 是可选的，如果没有提供则使用默认值
+  const requestId = originalRequestId || `refund_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
   if (!reason || typeof reason !== 'string') {
     throw new Error('参数错误：退款原因必须提供');
+  }
+
+  // 映射 reason 到数据库允许的值
+  // 数据库 CHECK 约束只允许：'service_unavailable', 'user_cancelled', 'error', 'other'
+  let mappedReason: string;
+  const reasonLower = reason.toLowerCase();
+  if (reasonLower.includes('服务') || reasonLower.includes('service') || reasonLower.includes('unavailable')) {
+    mappedReason = 'service_unavailable';
+  } else if (reasonLower.includes('取消') || reasonLower.includes('cancel')) {
+    mappedReason = 'user_cancelled';
+  } else if (reasonLower.includes('错误') || reasonLower.includes('error') || reasonLower.includes('失败') || reasonLower.includes('fail')) {
+    mappedReason = 'error';
+  } else {
+    mappedReason = 'other';
+  }
+
+  // 验证扣费明细总和是否等于退款金额
+  if (deduction) {
+    const deductionTotal = (deduction.daily_coins_grant || 0) + 
+                          (deduction.activity_coins_grant || 0) + 
+                          (deduction.tianji_coins_balance || 0);
+    if (deductionTotal !== amount) {
+      console.warn('扣费明细总和与退款金额不一致，使用精确退款模式:', {
+        deductionTotal,
+        amount,
+        deduction,
+      });
+    }
   }
 
   // 获取数据库连接（用于事务）
@@ -1450,76 +1482,274 @@ export async function createServiceRefundLog(
     // 开始事务
     await client.query('BEGIN');
 
-    // 1. 验证原始交易是否存在（可选，用于记录）
-    // 这里不强制要求交易存在，因为可能是系统自动退款
+    // 检查表结构，确定使用哪个字段
+    const tableInfo = await client.query(
+      `SELECT column_name 
+       FROM information_schema.columns 
+       WHERE table_schema = 'public' 
+         AND table_name = 'refund_logs'
+         AND column_name IN ('amount', 'refund_coins')`
+    );
+    
+    const hasAmountField = tableInfo.rows.some((row: any) => row.column_name === 'amount');
+    const hasRefundCoinsField = tableInfo.rows.some((row: any) => row.column_name === 'refund_coins');
+
+    // 1. 幂等性检查：检查 original_request_id 是否已存在
+    // 使用 SELECT FOR UPDATE 锁定行，防止并发问题
+    let existingRefundLog: any = null;
+    
+    if (hasAmountField) {
+      const existingResult = await client.query(
+        `SELECT 
+          id,
+          user_id,
+          original_request_id,
+          amount,
+          reason,
+          created_at
+        FROM public.refund_logs
+        WHERE original_request_id = $1 AND user_id = $2
+        FOR UPDATE`,
+        [requestId, userId]
+      );
+      
+      if (existingResult.rows.length > 0) {
+        existingRefundLog = existingResult.rows[0];
+      }
+    } else if (hasRefundCoinsField) {
+      const existingResult = await client.query(
+        `SELECT 
+          id,
+          user_id,
+          order_id,
+          original_request_id,
+          refund_amount,
+          refund_coins,
+          refund_reason,
+          status,
+          processed_at,
+          created_at
+        FROM public.refund_logs
+        WHERE original_request_id = $1 AND user_id = $2
+        FOR UPDATE`,
+        [requestId, userId]
+      );
+      
+      if (existingResult.rows.length > 0) {
+        existingRefundLog = existingResult.rows[0];
+      }
+    }
+
+    // 如果已存在退款记录，直接返回，不重复退款
+    if (existingRefundLog) {
+      await client.query('COMMIT');
+      
+      console.log('✅ [createServiceRefundLog] 退款已存在，返回已退款状态（幂等性）:', {
+        userId,
+        originalRequestId: requestId,
+        existingRefundLogId: existingRefundLog.id,
+      });
+
+      // 根据表结构返回相应格式
+      if (hasAmountField) {
+        return {
+          id: existingRefundLog.id,
+          user_id: existingRefundLog.user_id,
+          order_id: null,
+          original_request_id: existingRefundLog.original_request_id,
+          refund_amount: null,
+          refund_coins: existingRefundLog.amount || 0,
+          refund_reason: existingRefundLog.reason,
+          status: 'completed',
+          processed_at: existingRefundLog.created_at,
+          created_at: existingRefundLog.created_at,
+        };
+      } else {
+        return {
+          id: existingRefundLog.id,
+          user_id: existingRefundLog.user_id,
+          order_id: existingRefundLog.order_id,
+          original_request_id: existingRefundLog.original_request_id,
+          refund_amount: existingRefundLog.refund_amount,
+          refund_coins: existingRefundLog.refund_coins,
+          refund_reason: existingRefundLog.refund_reason,
+          status: existingRefundLog.status,
+          processed_at: existingRefundLog.processed_at,
+          created_at: existingRefundLog.created_at,
+        };
+      }
+    }
 
     // 2. 创建退款日志
     const refundLogId = randomUUID();
-    await client.query(
-      `INSERT INTO public.refund_logs (
-        id,
-        user_id,
-        order_id,
-        original_request_id,
-        refund_amount,
-        refund_coins,
-        refund_reason,
-        status,
-        created_at
-      )
-      VALUES ($1, $2, NULL, $3, NULL, $4, $5, 'pending', NOW())`,
-      [
-        refundLogId,
-        userId,
-        originalRequestId,
-        amount,  // refund_coins
-        reason,  // refund_reason
-      ]
-    );
+    
+    if (hasAmountField) {
+      // 使用 amount 字段的表结构
+      // 检查是否有 reason 字段的 CHECK 约束
+      const constraintCheck = await client.query(
+        `SELECT constraint_name, check_clause
+         FROM information_schema.check_constraints
+         WHERE constraint_schema = 'public'
+           AND constraint_name = 'refund_logs_reason_check'`
+      );
+      
+      const reasonValue = constraintCheck.rows.length > 0 ? mappedReason : reason;
+      
+      await client.query(
+        `INSERT INTO public.refund_logs (
+          id,
+          user_id,
+          original_request_id,
+          amount,
+          reason,
+          created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, NOW())`,
+        [
+          refundLogId,
+          userId,
+          requestId,
+          amount,
+          reasonValue,
+        ]
+      );
+    } else if (hasRefundCoinsField) {
+      // 使用 refund_coins 字段的表结构
+      // refund_reason 字段通常没有 CHECK 约束，可以直接使用原始 reason
+      await client.query(
+        `INSERT INTO public.refund_logs (
+          id,
+          user_id,
+          order_id,
+          original_request_id,
+          refund_amount,
+          refund_coins,
+          refund_reason,
+          status,
+          created_at
+        )
+        VALUES ($1, $2, NULL, $3, NULL, $4, $5, 'pending', NOW())`,
+        [
+          refundLogId,
+          userId,
+          requestId,
+          amount,  // refund_coins
+          reason,  // refund_reason（通常没有 CHECK 约束）
+        ]
+      );
+    } else {
+      throw new Error('数据库表 refund_logs 缺少必要的字段（amount 或 refund_coins）');
+    }
 
-    // 3. 退还天机币给用户
-    await client.query(
-      `UPDATE public.profiles
-       SET tianji_coins_balance = tianji_coins_balance + $1,
-           updated_at = NOW()
-       WHERE id = $2`,
-      [amount, userId]
-    );
+    // 3. 根据扣费明细精确退款到对应的余额类型
+    if (deduction && (deduction.daily_coins_grant || deduction.activity_coins_grant || deduction.tianji_coins_balance)) {
+      // 精确退款模式：根据扣费明细退款到对应的余额类型
+      const updates: string[] = [];
+      const values: any[] = [];
+      let paramIndex = 1;
+
+      if (deduction.daily_coins_grant && deduction.daily_coins_grant > 0) {
+        updates.push(`daily_coins_grant = daily_coins_grant + $${paramIndex}`);
+        values.push(deduction.daily_coins_grant);
+        paramIndex++;
+      }
+
+      if (deduction.activity_coins_grant && deduction.activity_coins_grant > 0) {
+        updates.push(`activity_coins_grant = activity_coins_grant + $${paramIndex}`);
+        values.push(deduction.activity_coins_grant);
+        paramIndex++;
+      }
+
+      if (deduction.tianji_coins_balance && deduction.tianji_coins_balance > 0) {
+        updates.push(`tianji_coins_balance = tianji_coins_balance + $${paramIndex}`);
+        values.push(deduction.tianji_coins_balance);
+        paramIndex++;
+      }
+
+      if (updates.length > 0) {
+        values.push(userId);
+        await client.query(
+          `UPDATE public.profiles
+           SET ${updates.join(', ')}, updated_at = NOW()
+           WHERE id = $${paramIndex}`,
+          values
+        );
+      }
+    } else {
+      // 降级方案：如果没有扣费明细，退到储值余额
+      await client.query(
+        `UPDATE public.profiles
+         SET tianji_coins_balance = tianji_coins_balance + $1,
+             updated_at = NOW()
+         WHERE id = $2`,
+        [amount, userId]
+      );
+    }
 
     // 提交事务
     await client.query('COMMIT');
 
-    // 查询创建的退款日志
-    const logResult = await client.query(
-      `SELECT 
-        id,
-        user_id,
-        order_id,
-        original_request_id,
-        refund_amount,
-        refund_coins,
-        refund_reason,
-        status,
-        processed_at,
-        created_at
-      FROM public.refund_logs
-      WHERE id = $1`,
-      [refundLogId]
-    );
-
-    const row = logResult.rows[0];
-    return {
-      id: row.id,
-      user_id: row.user_id,
-      order_id: row.order_id,
-      original_request_id: row.original_request_id,
-      refund_amount: row.refund_amount,
-      refund_coins: row.refund_coins,
-      refund_reason: row.refund_reason,
-      status: row.status,
-      processed_at: row.processed_at,
-      created_at: row.created_at,
-    };
+    // 查询创建的退款日志（根据表结构适配）
+    let logResult;
+    if (hasAmountField) {
+      logResult = await client.query(
+        `SELECT 
+          id,
+          user_id,
+          original_request_id,
+          amount,
+          reason,
+          created_at
+        FROM public.refund_logs
+        WHERE id = $1`,
+        [refundLogId]
+      );
+      
+      const row = logResult.rows[0];
+      return {
+        id: row.id,
+        user_id: row.user_id,
+        order_id: null,
+        original_request_id: row.original_request_id,
+        refund_amount: null,
+        refund_coins: row.amount || 0,
+        refund_reason: row.reason,
+        status: 'pending',
+        processed_at: null,
+        created_at: row.created_at,
+      };
+    } else {
+      logResult = await client.query(
+        `SELECT 
+          id,
+          user_id,
+          order_id,
+          original_request_id,
+          refund_amount,
+          refund_coins,
+          refund_reason,
+          status,
+          processed_at,
+          created_at
+        FROM public.refund_logs
+        WHERE id = $1`,
+        [refundLogId]
+      );
+      
+      const row = logResult.rows[0];
+      return {
+        id: row.id,
+        user_id: row.user_id,
+        order_id: row.order_id,
+        original_request_id: row.original_request_id,
+        refund_amount: row.refund_amount,
+        refund_coins: row.refund_coins,
+        refund_reason: row.refund_reason,
+        status: row.status,
+        processed_at: row.processed_at,
+        created_at: row.created_at,
+      };
+    }
   } catch (error: any) {
     // 回滚事务
     await client.query('ROLLBACK');

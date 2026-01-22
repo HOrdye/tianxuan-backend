@@ -2,8 +2,11 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
+import swaggerUi from 'swagger-ui-express';
 // 引入数据库模块
 import { checkDatabaseHealth } from './config/database';
+// 引入 Swagger 配置
+import { swaggerSpec } from './config/swagger';
 // 引入路由
 import authRoutes from './routes/auth.routes';
 import userRoutes from './routes/user.routes';
@@ -16,6 +19,9 @@ import adminRoutes from './routes/admin.routes';
 import taskRoutes from './routes/task.routes';
 import resonanceRoutes from './routes/resonance.routes';
 import timespaceRoutes from './routes/timespace.routes';
+import llmRoutes from './routes/llm.routes';
+import celestialResonanceRoutes from './routes/celestialResonance.routes';
+import divinationRoutes from './routes/divination.routes';
 
 dotenv.config();
 
@@ -78,6 +84,12 @@ app.get('/health', async (req, res) => {
   }
 });
 
+// 📚 Swagger API 文档
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+  customCss: '.swagger-ui .topbar { display: none }',
+  customSiteTitle: '天选后端 API 文档',
+}));
+
 // 🔐 认证路由
 app.use('/api/auth', authRoutes);
 
@@ -110,6 +122,15 @@ app.use('/api/resonance', resonanceRoutes);
 
 // 🌌 时空导航缓存路由
 app.use('/api/timespace', timespaceRoutes);
+
+// 🤖 LLM API 路由
+app.use('/api/llm', llmRoutes);
+
+// 🌟 天感·今日气象路由
+app.use('/api/celestial-resonance', celestialResonanceRoutes);
+
+// 🔮 占卜历史路由
+app.use('/api/divination', divinationRoutes);
 
 // 404 处理
 app.use((req, res) => {

@@ -841,6 +841,7 @@ export async function createRefundLog(
     const body = req.body;
 
     // 判断是订单退款还是AI服务退款
+    // 优先检查订单退款（有 orderId）
     if (body.orderId) {
       // 场景1：订单退款
       const { orderId, refundAmount, refundCoins, refundReason } = body;
@@ -872,9 +873,9 @@ export async function createRefundLog(
 
       // 返回创建的退款日志
       sendSuccess(res, refundLog, '订单退款日志创建成功');
-    } else if (body.original_request_id) {
-      // 场景2：AI服务退款
-      const { amount, reason, original_deduction, original_request_id } = body;
+    } else if (body.amount && body.reason) {
+      // 场景2：AI服务退款（只要有 amount 和 reason 就识别为AI服务退款）
+      const { amount, reason, original_deduction, original_request_id, deduction } = body;
 
       // 参数验证
       if (!amount || typeof amount !== 'number' || amount <= 0) {
@@ -887,9 +888,33 @@ export async function createRefundLog(
         return;
       }
 
-      if (!original_request_id || typeof original_request_id !== 'string') {
-        sendBadRequest(res, '原始请求ID (original_request_id) 必须提供且为字符串');
-        return;
+      // original_request_id 是可选的，如果没有提供则使用默认值
+      const requestId = original_request_id || `refund_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+      // 验证扣费明细格式（如果提供）
+      if (deduction !== undefined) {
+        if (typeof deduction !== 'object' || deduction === null) {
+          sendBadRequest(res, '扣费明细 (deduction) 必须是对象');
+          return;
+        }
+
+        if (deduction.daily_coins_grant !== undefined && 
+            (typeof deduction.daily_coins_grant !== 'number' || deduction.daily_coins_grant < 0)) {
+          sendBadRequest(res, '扣费明细 daily_coins_grant 必须是非负数');
+          return;
+        }
+
+        if (deduction.activity_coins_grant !== undefined && 
+            (typeof deduction.activity_coins_grant !== 'number' || deduction.activity_coins_grant < 0)) {
+          sendBadRequest(res, '扣费明细 activity_coins_grant 必须是非负数');
+          return;
+        }
+
+        if (deduction.tianji_coins_balance !== undefined && 
+            (typeof deduction.tianji_coins_balance !== 'number' || deduction.tianji_coins_balance < 0)) {
+          sendBadRequest(res, '扣费明细 tianji_coins_balance 必须是非负数');
+          return;
+        }
       }
 
       // 创建AI服务退款日志
@@ -898,7 +923,12 @@ export async function createRefundLog(
         amount,
         reason,
         originalDeduction: original_deduction || amount,
-        originalRequestId: original_request_id,
+        originalRequestId: requestId,
+        deduction: deduction ? {
+          daily_coins_grant: deduction.daily_coins_grant,
+          activity_coins_grant: deduction.activity_coins_grant,
+          tianji_coins_balance: deduction.tianji_coins_balance,
+        } : undefined,
       });
 
       // 返回创建的退款日志

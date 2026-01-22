@@ -1,5 +1,6 @@
 import { Response } from 'express';
 import * as checkinUpgradeService from '../services/checkin-upgrade.service';
+import { calculateCheckinReward, Tier } from '../services/checkin.service';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { pool } from '../config/database';
 import { sendSuccess, sendError, sendUnauthorized, sendBadRequest, sendNotFound, sendInternalError } from '../utils/response';
@@ -42,11 +43,12 @@ export async function calculateUpgradeBonus(
       return;
     }
 
-    if (!['free', 'basic', 'premium', 'vip'].includes(newTier)) {
+    const validTiers = ['guest', 'explorer', 'basic', 'premium', 'vip'];
+    if (!validTiers.includes(newTier)) {
       res.status(400).json({
         success: false,
         error: '参数错误',
-        message: '无效的会员等级，必须是 free、basic、premium 或 vip',
+        message: `无效的会员等级，必须是以下之一：${validTiers.join('、')}`,
       });
       return;
     }
@@ -65,17 +67,9 @@ export async function calculateUpgradeBonus(
 
     // 如果今天已签到，计算补差
     if (hasTodayCheckIn && todayCheckIn) {
-      // 计算新等级应得奖励
-      const tierRewards: Record<string, number> = {
-        'free': 10,
-        'basic': 15,
-        'premium': 20,
-        'vip': 30,
-      };
-      const baseReward = tierRewards[newTier] || 10;
+      // 计算新等级应得奖励（使用7天循环奖励机制）
       const consecutiveDays = todayCheckIn.consecutive_days || 1;
-      const bonusReward = Math.floor(consecutiveDays / 7) * 10;
-      const expectedCoins = baseReward + bonusReward;
+      const expectedCoins = calculateCheckinReward(newTier as Tier, consecutiveDays);
       const alreadyEarned = todayCheckIn.coins_earned || 0;
       const bonusCoins = Math.max(0, expectedCoins - alreadyEarned);
 
@@ -167,11 +161,12 @@ export async function grantUpgradeBonus(
       return;
     }
 
-    if (!['free', 'basic', 'premium', 'vip'].includes(newTier)) {
+    const validTiers = ['guest', 'explorer', 'basic', 'premium', 'vip'];
+    if (!validTiers.includes(newTier)) {
       res.status(400).json({
         success: false,
         error: '参数错误',
-        message: '无效的会员等级，必须是 free、basic、premium 或 vip',
+        message: `无效的会员等级，必须是以下之一：${validTiers.join('、')}`,
       });
       return;
     }
@@ -179,7 +174,7 @@ export async function grantUpgradeBonus(
     // 发放补差
     const result = await checkinUpgradeService.grantUpgradeBonus(
       userId,
-      newTier as 'free' | 'basic' | 'premium' | 'vip',
+      newTier as 'guest' | 'explorer' | 'basic' | 'premium' | 'vip',
       req.body.upgrade_date
     );
 

@@ -1799,6 +1799,13 @@ export async function saveAnalysisSession(
     throw new Error('参数错误：分析会话数据必须有效');
   }
 
+  // 从 sessionData 中提取 targetScope（支持 camelCase 和 snake_case）
+  const targetScope = sessionData?.targetScope || sessionData?.target_scope;
+  
+  if (!targetScope) {
+    throw new Error('参数错误：sessionData.targetScope 不能为空');
+  }
+
   const client = await pool.connect();
   
   try {
@@ -1814,12 +1821,13 @@ export async function saveAnalysisSession(
     );
 
     if (!tableExists.rows[0].exists) {
-      // 创建表
+      // 创建表（包含 target_scope 字段）
       await client.query(`
         CREATE TABLE IF NOT EXISTS public.analysis_sessions (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           user_id UUID NOT NULL,
           profile_id UUID NOT NULL,
+          target_scope VARCHAR(255) NOT NULL,
           session_data JSONB NOT NULL,
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -1841,9 +1849,16 @@ export async function saveAnalysisSession(
         CREATE INDEX IF NOT EXISTS idx_analysis_sessions_created_at 
         ON public.analysis_sessions(created_at DESC)
       `);
+
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_analysis_sessions_target_scope 
+        ON public.analysis_sessions(target_scope)
+      `);
     } else {
       // 表已存在，检查并添加缺失的字段
-      const columnExists = await client.query(
+      
+      // 检查 session_data 字段
+      const sessionDataExists = await client.query(
         `SELECT EXISTS (
           SELECT 1 
           FROM information_schema.columns 
@@ -1853,7 +1868,7 @@ export async function saveAnalysisSession(
         )`
       );
 
-      if (!columnExists.rows[0].exists) {
+      if (!sessionDataExists.rows[0].exists) {
         // 添加缺失的 session_data 字段
         await client.query(`
           ALTER TABLE public.analysis_sessions 
@@ -1866,14 +1881,45 @@ export async function saveAnalysisSession(
           ALTER COLUMN session_data DROP DEFAULT
         `);
       }
+
+      // 检查 target_scope 字段
+      const targetScopeExists = await client.query(
+        `SELECT EXISTS (
+          SELECT 1 
+          FROM information_schema.columns 
+          WHERE table_schema = 'public' 
+            AND table_name = 'analysis_sessions' 
+            AND column_name = 'target_scope'
+        )`
+      );
+
+      if (!targetScopeExists.rows[0].exists) {
+        // 添加缺失的 target_scope 字段
+        await client.query(`
+          ALTER TABLE public.analysis_sessions 
+          ADD COLUMN target_scope VARCHAR(255) NOT NULL DEFAULT ''
+        `);
+        
+        // 移除默认值（因为字段应该是必填的）
+        await client.query(`
+          ALTER TABLE public.analysis_sessions 
+          ALTER COLUMN target_scope DROP DEFAULT
+        `);
+
+        // 创建索引
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_analysis_sessions_target_scope 
+          ON public.analysis_sessions(target_scope)
+        `);
+      }
     }
 
-    // 插入新记录
+    // 插入新记录（包含 target_scope 字段）
     const result = await client.query(
-      `INSERT INTO public.analysis_sessions (user_id, profile_id, session_data)
-       VALUES ($1, $2, $3)
+      `INSERT INTO public.analysis_sessions (user_id, profile_id, target_scope, session_data)
+       VALUES ($1, $2, $3, $4)
        RETURNING id`,
-      [userId, profileId, JSON.stringify(sessionData)]
+      [userId, profileId, targetScope, JSON.stringify(sessionData)]
     );
 
     const sessionId = result.rows[0].id;
